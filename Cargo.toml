@@ -1,0 +1,9 @@
+[package]
+name = "proof-wellencryptedness-lwe"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+bellman = "0.14"
+blsful = "3.0.0-pre6"
+frodo-kem-rs = "0.4"
