@@ -5,5 +5,14 @@ edition = "2021"
 
 [dependencies]
 bellman = "0.14"
-blsful = "3.0.0-pre6"
-frodo-kem-rs = "0.4"
+blsful = "3.0.0-pre7"
+digest = "0.10"
+elliptic-curve = "0.13"
+frodo-kem-rs = { version = "0.4", features = ["hazmat"] }
+pairing = "0.23"
+rand_core = "0.6"
+zeroize = "1"
+
+[dev-dependencies]
+rand_chacha = "0.3"
+rand = "0.8.5"
