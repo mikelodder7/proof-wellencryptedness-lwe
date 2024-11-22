@@ -13,106 +13,115 @@ use zeroize::Zeroize;
 
 /// A gadget for a 16-bit value add, multiply, and range operations
 #[derive(Debug, Clone, Copy)]
-pub struct Gadget16Bit {
-    lhs: Option<u32>,
-    rhs: Option<u32>,
-    bits: usize,
+pub struct Uint16 {
+    value: u16,
+    variable: Variable,
+    modulus: Variable,
 }
 
-impl Gadget16Bit {
-    pub fn lhs(&self) -> u32 {
-        self.lhs.unwrap_or_default()
-    }
-    pub fn rhs(&self) -> u32 {
-        self.rhs.unwrap_or_default()
-    }
-
-    pub fn add<CS: ConstraintSystem<Scalar>>(&self, cs: &mut CS) -> Result<(), SynthesisError> {
-        let lhs = Scalar::from(self.lhs());
-        let rhs = Scalar::from(self.rhs());
-        let sum = lhs + rhs;
-
-        let lhs = cs.alloc(|| "lhs", || Ok(lhs))?;
-        let rhs = cs.alloc(|| "rhs", || Ok(rhs))?;
-        let sum = cs.alloc(|| "sum", || Ok(sum))?;
-
-        cs.enforce(
-            || format!("{}-bit add", self.bits),
-            |lc| lc + lhs + rhs,
-            |lc| lc + CS::one(),
-            |lc| lc + sum,
-        );
-
-        Ok(())
-    }
-
-    pub fn mul<CS: ConstraintSystem<Scalar>>(&self, cs: &mut CS) -> Result<(), SynthesisError> {
-        let lhs = Scalar::from(self.lhs());
-        let rhs = Scalar::from(self.rhs());
-        let product = lhs * rhs;
-
-        let lhs = cs.alloc(|| "lhs", || Ok(lhs))?;
-        let rhs = cs.alloc(|| "rhs", || Ok(rhs))?;
-        let product = cs.alloc(|| "product", || Ok(product))?;
-
-        cs.enforce(
-            || format!("{}-bit multiply", self.bits),
-            |lc| lc + lhs,
-            |lc| lc + rhs,
-            |lc| lc + product,
-        );
-
-        Ok(())
-    }
-
-    pub fn range_proof<CS: ConstraintSystem<Scalar>>(
-        cs: &mut CS,
-        value: Option<u32>,
-        bits: usize,
-    ) -> Result<(), SynthesisError> {
-        let value = value.ok_or(SynthesisError::AssignmentMissing)?;
-
-        let sc_value = cs.alloc(|| "value", || Ok(Scalar::from(value)))?;
-
-        let mut reconstructed = LinearCombination::zero();
-
-        // Decompose the value into n bits
-        for i in 0..bits {
-            let j = (value >> i) & 1;
-
-            let bit = cs.alloc(|| format!("bit {}", i), || Ok(Scalar::from(j)))?;
-            // Ensure the bit is binary (0 or 1)
-            cs.enforce(
-                || format!("bit {} binary constraint", i),
-                |lc| lc + bit,
-                |lc| lc + bit,
-                |lc| lc + bit,
-            );
-
-            let power = cs.alloc(|| format!("power {}", i), || Ok(Scalar::from(1u32 << i)))?;
-            let term = cs.alloc(
-                || format!("term {}", i),
-                || Ok(Scalar::from(j * (1u32 << i))),
-            )?;
-
-            cs.enforce(
-                || format!("bit {} * 2^{}", i, i),
-                |lc| lc + power,
-                |lc| lc + bit,
-                |lc| lc + term,
-            );
-
-            reconstructed = reconstructed + power;
+impl Uint16 {
+    pub fn new(value: u16, variable: Variable, modulus: Variable) -> Self {
+        Self {
+            value,
+            variable,
+            modulus,
         }
+    }
 
-        // Finally, enforce that our running sum equals the original value
+    pub fn value(&self) -> u16 {
+        self.value
+    }
+
+    pub fn variable(&self) -> Variable {
+        self.variable
+    }
+
+    pub fn modulus(&self) -> Variable {
+        self.modulus
+    }
+
+    pub fn add<CS: ConstraintSystem<Scalar>>(
+        &self,
+        mut cs: CS,
+        other: &Self,
+    ) -> Result<Self, SynthesisError> {
+        let lhs = self.value;
+        let rhs = other.value;
+        let sum = lhs.wrapping_add(rhs);
+        let raw_sum = (lhs as u32) + (rhs as u32);
+        let quotient = raw_sum / 65536;
+
+        let sum_var = cs.alloc(|| "sum", || Ok(Scalar::from(sum)))?;
+        let raw_sum_var = cs.alloc(|| "raw sum", || Ok(Scalar::from(raw_sum)))?;
+        let quotient_var = cs.alloc(|| "quotient sum", || Ok(Scalar::from(quotient)))?;
+
         cs.enforce(
-            || "range proof sum check",
-            |lc| lc + &reconstructed,
+            || "addition raw sum",
+            |lc| lc + self.variable + other.variable,
             |lc| lc + CS::one(),
-            |lc| lc + sc_value,
+            |lc| lc + raw_sum_var,
+        );
+        cs.enforce(
+            || "addition modulus",
+            |lc| lc + quotient_var,
+            |lc| lc + self.modulus,
+            |lc| lc + raw_sum_var - sum_var,
         );
 
+        Ok(Self {
+            value: sum,
+            variable: sum_var,
+            modulus: self.modulus,
+        })
+    }
+
+    pub fn mul<CS: ConstraintSystem<Scalar>>(
+        &self,
+        mut cs: CS,
+        other: &Self,
+    ) -> Result<Self, SynthesisError> {
+        let lhs = self.value;
+        let rhs = other.value;
+        let prod = lhs.wrapping_mul(rhs);
+        let raw_prod = (lhs as u32) * (rhs as u32);
+        let quotient = raw_prod / 65536;
+
+        let prod_var = cs.alloc(|| "product input", || Ok(Scalar::from(prod)))?;
+        let raw_prod_var = cs.alloc(|| "raw product input", || Ok(Scalar::from(raw_prod)))?;
+        let quotient_var = cs.alloc(|| "quotient input", || Ok(Scalar::from(quotient)))?;
+
+        // raw_product = a * b
+        cs.enforce(
+            || "raw product",
+            |lc| lc + self.variable,
+            |lc| lc + other.variable,
+            |lc| lc + raw_prod_var,
+        );
+        // raw_product = quotient * modulus + c
+        cs.enforce(
+            || "product modulus",
+            |lc| lc + quotient_var,
+            |lc| lc + self.modulus,
+            |lc| lc + raw_prod_var - prod_var,
+        );
+        Ok(Self {
+            value: prod,
+            variable: prod_var,
+            modulus: self.modulus,
+        })
+    }
+
+    pub fn equal<CS: ConstraintSystem<Scalar>>(
+        &self,
+        mut cs: CS,
+        other: &Self,
+    ) -> Result<(), SynthesisError> {
+        cs.enforce(
+            || "equal",
+            |lc| lc + self.variable,
+            |lc| lc + CS::one(),
+            |lc| lc + other.variable,
+        );
         Ok(())
     }
 }
@@ -140,13 +149,6 @@ impl<'a> MatrixView<'a> {
     pub fn len(&self) -> usize {
         self.length
     }
-}
-
-#[derive(Debug, Clone, Copy)]
-struct CircuitVariable {
-    value: u16,
-    variable: Variable,
-    modulus: Variable,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -205,7 +207,7 @@ impl<'a, P: Params> Circuit<Scalar> for FrodoKemEncapsulateCircuit<'a, P> {
                 || format!("matrix_a[{}]", i),
                 || Ok(Scalar::from(self.matrix_a[i])),
             )?;
-            matrix_a.push(CircuitVariable {
+            matrix_a.push(Uint16 {
                 value: self.matrix_a[i],
                 variable: matrix_a_i,
                 modulus,
@@ -216,7 +218,7 @@ impl<'a, P: Params> Circuit<Scalar> for FrodoKemEncapsulateCircuit<'a, P> {
                 || format!("matrix_b[{}]", i),
                 || Ok(Scalar::from(self.matrix_b[i])),
             )?;
-            matrix_b.push(CircuitVariable {
+            matrix_b.push(Uint16 {
                 value: self.matrix_b[i],
                 variable: matrix_b_i,
                 modulus,
@@ -224,7 +226,7 @@ impl<'a, P: Params> Circuit<Scalar> for FrodoKemEncapsulateCircuit<'a, P> {
         }
         for i in 0..self.c1.len() {
             let c1_i = cs.alloc_input(|| format!("c1[{}]", i), || Ok(Scalar::from(self.c1[i])))?;
-            c1.push(CircuitVariable {
+            c1.push(Uint16 {
                 value: self.c1[i],
                 variable: c1_i,
                 modulus,
@@ -232,7 +234,7 @@ impl<'a, P: Params> Circuit<Scalar> for FrodoKemEncapsulateCircuit<'a, P> {
         }
         for i in 0..self.c2.len() {
             let c2_i = cs.alloc_input(|| format!("c2[{}]", i), || Ok(Scalar::from(self.c2[i])))?;
-            c2.push(CircuitVariable {
+            c2.push(Uint16 {
                 value: self.c2[i],
                 variable: c2_i,
                 modulus,
@@ -250,7 +252,7 @@ impl<'a, P: Params> Circuit<Scalar> for FrodoKemEncapsulateCircuit<'a, P> {
                 || format!("matrix_s[{}]", i),
                 || Ok(Scalar::from(self.matrix_s[i])),
             )?;
-            matrix_s.push(CircuitVariable {
+            matrix_s.push(Uint16 {
                 value: self.matrix_s[i],
                 variable: matrix_s_i,
                 modulus,
@@ -261,7 +263,7 @@ impl<'a, P: Params> Circuit<Scalar> for FrodoKemEncapsulateCircuit<'a, P> {
                 || format!("matrix_ep[{}]", i),
                 || Ok(Scalar::from(self.matrix_ep[i])),
             )?;
-            matrix_ep.push(CircuitVariable {
+            matrix_ep.push(Uint16 {
                 value: self.matrix_ep[i],
                 variable: matrix_ep_i,
                 modulus,
@@ -272,7 +274,7 @@ impl<'a, P: Params> Circuit<Scalar> for FrodoKemEncapsulateCircuit<'a, P> {
                 || format!("matrix_epp[{}]", i),
                 || Ok(Scalar::from(self.matrix_epp[i])),
             )?;
-            matrix_epp.push(CircuitVariable {
+            matrix_epp.push(Uint16 {
                 value: self.matrix_epp[i],
                 variable: matrix_epp_i,
                 modulus,
@@ -280,7 +282,7 @@ impl<'a, P: Params> Circuit<Scalar> for FrodoKemEncapsulateCircuit<'a, P> {
         }
         for i in 0..self.mu.len() {
             let mu_i = cs.alloc(|| format!("mu[{}]", i), || Ok(Scalar::from(self.mu[i])))?;
-            mu.push(CircuitVariable {
+            mu.push(Uint16 {
                 value: self.mu[i],
                 variable: mu_i,
                 modulus,
@@ -309,20 +311,20 @@ impl<'a, P: Params> FrodoKemEncapsulateCircuit<'a, P> {
         debug_assert_eq!(matrix_s.len(), P::N_X_N_BAR);
         debug_assert_eq!(matrix_b.len(), P::N_X_N_BAR);
         debug_assert_eq!(matrix_ep.len(), P::N_X_N_BAR);
-        debug_assert_eq!(matrix_epp.len(), P::N_X_N_BAR);
+        debug_assert_eq!(matrix_epp.len(), P::N_BAR_X_N_BAR);
         debug_assert_eq!(c1.len(), P::N_X_N_BAR);
         debug_assert_eq!(c2.len(), P::N_BAR_X_N_BAR);
-        debug_assert_eq!(mu.len(), P::BYTES_MU);
+        debug_assert_eq!(mu.len(), P::N_BAR_X_N_BAR);
 
         Self {
             matrix_a: MatrixView::new(Some(matrix_a), P::N_X_N),
             matrix_s: MatrixView::new(Some(matrix_s), P::N_X_N_BAR),
             matrix_b: MatrixView::new(Some(matrix_b), P::N_X_N_BAR),
             matrix_ep: MatrixView::new(Some(matrix_ep), P::N_X_N_BAR),
-            matrix_epp: MatrixView::new(Some(matrix_epp), P::N_X_N_BAR),
+            matrix_epp: MatrixView::new(Some(matrix_epp), P::N_BAR_X_N_BAR),
             c1: MatrixView::new(Some(c1), P::N_X_N_BAR),
             c2: MatrixView::new(Some(c2), P::N_BAR_X_N_BAR),
-            mu: MatrixView::new(Some(mu), P::BYTES_MU),
+            mu: MatrixView::new(Some(mu), P::N_BAR_X_N_BAR),
             _marker: PhantomData,
         }
     }
@@ -330,31 +332,29 @@ impl<'a, P: Params> FrodoKemEncapsulateCircuit<'a, P> {
     fn mul_add_sa_plus_e<CS: ConstraintSystem<Scalar>>(
         &self,
         cs: &mut CS,
-        s: &[CircuitVariable],
-        a: &[CircuitVariable],
-        e: &[CircuitVariable],
-        c1: &[CircuitVariable],
+        s: &[Uint16],
+        a: &[Uint16],
+        e: &[Uint16],
+        c1: &[Uint16],
     ) -> Result<(), SynthesisError> {
         for i in 0..P::N {
             for k in 0..P::N_BAR {
                 let k_n = k * P::N;
                 let mut sum = e[k_n + i];
                 for j in 0..P::N {
-                    let prod = self.constrain_mul(
-                        cs,
-                        &format!("s*a[{}][{}][{}]", i, k, j),
-                        a[j * P::N + i],
-                        s[k_n + j],
+                    let prod = a[j * P::N + i].mul(
+                        cs.namespace(|| format!("s*a[{}][{}][{}]", i, k, j)),
+                        &s[k_n + j],
                     )?;
-                    sum =
-                        self.constrain_add(cs, &format!("s*a+e[{}][{}][{}]", i, k, j), sum, prod)?;
+                    sum = sum.add(
+                        cs.namespace(|| format!("s*a+e[{}][{}][{}]", i, k, j)),
+                        &prod,
+                    )?;
                 }
-                cs.enforce(
-                    || format!("mul_add_sa_plus_e[{}][{}]", i, k),
-                    |lc| lc + sum.variable,
-                    |lc| lc + CS::one(),
-                    |lc| lc + c1[k_n + i].variable,
-                );
+                sum.equal(
+                    cs.namespace(|| format!("mul_add_sa_plus_e[{}][{}]", i, k)),
+                    &c1[k_n + i],
+                )?;
             }
         }
         Ok(())
@@ -363,132 +363,38 @@ impl<'a, P: Params> FrodoKemEncapsulateCircuit<'a, P> {
     fn mul_add_sb_plus_e_plus_mu<CS: ConstraintSystem<Scalar>>(
         &self,
         cs: &mut CS,
-        s: &[CircuitVariable],
-        b: &[CircuitVariable],
-        e: &[CircuitVariable],
-        mu: &[CircuitVariable],
-        c2: &[CircuitVariable],
+        s: &[Uint16],
+        b: &[Uint16],
+        e: &[Uint16],
+        mu: &[Uint16],
+        c2: &[Uint16],
     ) -> Result<(), SynthesisError> {
         for k in 0..P::N_BAR {
             let k_n = k * P::N;
             let k_bar = k * P::N_BAR;
             for i in 0..P::N_BAR {
-                let mut sum = self.constrain_add(
-                    cs,
-                    &format!("e + mu [{}][{}]", k, i),
-                    e[k_bar + i],
-                    mu[k_bar + i],
+                let mut sum = e[k_bar + i].add(
+                    cs.namespace(|| format!("e + mu [{}][{}]", k, i)),
+                    &mu[k_bar + i],
                 )?;
                 for j in 0..P::N {
-                    let prod = self.constrain_mul(
-                        cs,
-                        &format!("s*b[{}][{}][{}]", k, i, j),
-                        s[k_n + j],
-                        b[j * P::N_BAR + i],
+                    let prod = s[k_n + j].mul(
+                        cs.namespace(|| format!("s*b[{}][{}][{}]", k, i, j)),
+                        &b[j * P::N_BAR + i],
                     )?;
 
-                    sum = self.constrain_add(
-                        cs,
-                        &format!("s*b + e + mu[{}][{}][{}]", k, i, j),
-                        sum,
-                        prod,
+                    sum = sum.add(
+                        cs.namespace(|| format!("s*b + e + mu[{}][{}][{}]", k, i, j)),
+                        &prod,
                     )?;
                 }
-                cs.enforce(
-                    || format!("mul_add_sb_plus_e[{}][{}]", k, i),
-                    |lc| lc + sum.variable,
-                    |lc| lc + CS::one(),
-                    |lc| lc + c2[k_bar + i].variable,
-                )
+                sum.equal(
+                    cs.namespace(|| format!("mul_add_sb_plus_e[{}][{}]", k, i)),
+                    &c2[k_bar + i],
+                )?;
             }
         }
         Ok(())
-    }
-
-    fn constrain_add<CS: ConstraintSystem<Scalar>>(
-        &self,
-        cs: &mut CS,
-        annotation: &str,
-        lhs: CircuitVariable,
-        rhs: CircuitVariable,
-    ) -> Result<CircuitVariable, SynthesisError> {
-        let sum = lhs.value.wrapping_add(rhs.value);
-        let raw_sum = (lhs.value as u32) + (rhs.value as u32);
-        let quotient = raw_sum / 65536;
-
-        let sum_var = cs.alloc(|| format!("{} sum", annotation), || Ok(Scalar::from(sum)))?;
-        let raw_sum_var = cs.alloc(
-            || format!("{} raw sum", annotation),
-            || Ok(Scalar::from(raw_sum)),
-        )?;
-        let quotient_var = cs.alloc(
-            || format!("{} quotient sum", annotation),
-            || Ok(Scalar::from(quotient)),
-        )?;
-
-        cs.enforce(
-            || format!("{} addition raw sum", annotation),
-            |lc| lc + lhs.variable + rhs.variable,
-            |lc| lc + CS::one(),
-            |lc| lc + raw_sum_var,
-        );
-        cs.enforce(
-            || format!("{} addition modulus", annotation),
-            |lc| lc + quotient_var,
-            |lc| lc + lhs.modulus,
-            |lc| lc + raw_sum_var - sum_var,
-        );
-
-        Ok(CircuitVariable {
-            value: sum,
-            variable: sum_var,
-            modulus: lhs.modulus,
-        })
-    }
-
-    fn constrain_mul<CS: ConstraintSystem<Scalar>>(
-        &self,
-        cs: &mut CS,
-        annotation: &str,
-        lhs: CircuitVariable,
-        rhs: CircuitVariable,
-    ) -> Result<CircuitVariable, SynthesisError> {
-        let prod = lhs.value.wrapping_mul(rhs.value);
-        let raw_prod = (lhs.value as u32) * (rhs.value as u32);
-        let quotient = raw_prod / 65536;
-
-        let prod_var = cs.alloc(
-            || format!("{} product", annotation),
-            || Ok(Scalar::from(prod)),
-        )?;
-        let raw_prod_var = cs.alloc(
-            || format!("{} raw product", annotation),
-            || Ok(Scalar::from(raw_prod)),
-        )?;
-        let quotient_var = cs.alloc(
-            || format!("{} quotient", annotation),
-            || Ok(Scalar::from(quotient)),
-        )?;
-
-        // raw_product = a * b
-        cs.enforce(
-            || format!("{} raw product", annotation),
-            |lc| lc + lhs.variable,
-            |lc| lc + rhs.variable,
-            |lc| lc + raw_prod_var,
-        );
-        // raw_product = quotient * modulus + c
-        cs.enforce(
-            || format!("{} product modulus", annotation),
-            |lc| lc + quotient_var,
-            |lc| lc + lhs.modulus,
-            |lc| lc + raw_prod_var - prod_var,
-        );
-        Ok(CircuitVariable {
-            value: prod,
-            variable: prod_var,
-            modulus: lhs.modulus,
-        })
     }
 }
 
@@ -620,7 +526,9 @@ impl<P: Params, E: Expanded, S: Sample> FrodoKemWithZkp<P, E, S> {
             &matrix_c,
             &mu_encoded,
         );
+        let before = std::time::Instant::now();
         let proof = groth16::create_random_proof(circuit, params, &mut rng).unwrap();
+        println!("Time to create proof: {:?}", before.elapsed());
 
         matrix_v.zeroize();
         sp.zeroize();
@@ -662,8 +570,11 @@ impl<P: Params, E: Expanded, S: Sample> FrodoKemWithZkp<P, E, S> {
             .chain(matrix_c2.iter())
             .map(|i| Scalar::from(*i))
             .collect::<Vec<_>>();
-        groth16::verify_proof(prepared_verifying_key, proof, inputs.as_slice())
-            .map_err(|e| e.to_string())
+        let before = std::time::Instant::now();
+        let res = groth16::verify_proof(prepared_verifying_key, proof, inputs.as_slice())
+            .map_err(|e| e.to_string());
+        println!("Time to verify proof: {:?}", before.elapsed());
+        res
     }
 }
 
@@ -797,10 +708,121 @@ mod tests {
     }
 
     #[test]
+    fn test_matrix_multiply() {
+        #[derive(Copy, Clone)]
+        struct MatrixGadget {
+            /// 2x3
+            matrix_a: [u16; 6],
+            /// 3 x 2
+            matrix_b: [u16; 6],
+            /// 2 x 2
+            matrix_c: [u16; 4],
+        }
+
+        impl Default for MatrixGadget {
+            fn default() -> Self {
+                Self {
+                    matrix_a: [0; 6],
+                    matrix_b: [0; 6],
+                    matrix_c: [0; 4],
+                }
+            }
+        }
+
+        impl Circuit<Scalar> for MatrixGadget {
+            fn synthesize<CS: ConstraintSystem<Scalar>>(
+                self,
+                cs: &mut CS,
+            ) -> Result<(), SynthesisError> {
+                let modulus = cs.alloc(|| "16-bit modulus", || Ok(Scalar::from(65536u32)))?;
+                let mut c = Vec::with_capacity(4);
+
+                for i in 0..4 {
+                    let var = cs.alloc_input(
+                        || format!("c_{}", i),
+                        || Ok(Scalar::from(self.matrix_c[i])),
+                    )?;
+                    c.push(Uint16 {
+                        value: self.matrix_c[i],
+                        variable: var,
+                        modulus,
+                    })
+                }
+
+                let mut a = Vec::with_capacity(6);
+                for i in 0..6 {
+                    let var =
+                        cs.alloc(|| format!("a_{}", i), || Ok(Scalar::from(self.matrix_a[i])))?;
+                    a.push(Uint16 {
+                        value: self.matrix_a[i],
+                        variable: var,
+                        modulus,
+                    })
+                }
+
+                let mut b = Vec::with_capacity(6);
+                for i in 0..6 {
+                    let var =
+                        cs.alloc(|| format!("b_{}", i), || Ok(Scalar::from(self.matrix_b[i])))?;
+                    b.push(Uint16 {
+                        value: self.matrix_b[i],
+                        variable: var,
+                        modulus,
+                    })
+                }
+
+                for i in 0..2 {
+                    for j in 0..2 {
+                        let mut sum = Option::<Uint16>::None;
+                        for k in 0..3 {
+                            let prod = a[i * 3 + k].add(
+                                cs.namespace(|| format!("a[{}][{}] * b[{}][{}]", i, k, k, j)),
+                                &b[3 * j + k],
+                            )?;
+                            if let Some(s) = sum {
+                                sum = Some(
+                                    s.add(cs.namespace(|| format!("sum[{}][{}]", i, j)), &prod)?,
+                                );
+                            } else {
+                                sum = Some(prod);
+                            }
+                        }
+                        let sum = sum.unwrap();
+                        sum.equal(cs.namespace(|| format!("c[{}][{}]", i, j)), &c[2 * i + j])?;
+                    }
+                }
+
+                Ok(())
+            }
+        }
+
+        let mut c = MatrixGadget::default();
+        let mut rng = ChaCha8Rng::seed_from_u64(0u64);
+        let params = groth16::generate_random_parameters::<Bls12, _, _>(c, &mut rng).unwrap();
+        let pvk = groth16::prepare_verifying_key(&params.vk);
+        c.matrix_a = [1, 2, 3, 4, 5, 6];
+        c.matrix_b = [7, 8, 9, 10, 11, 12];
+
+        let proof = groth16::create_random_proof(c, &params, &mut rng).unwrap();
+        let sc_c = [
+            Scalar::from(58u64),
+            Scalar::from(64u64),
+            Scalar::from(139u64),
+            Scalar::from(154u64),
+        ];
+        let res = groth16::verify_proof(&pvk, &proof, &sc_c);
+        println!("{:?}", res);
+    }
+
+    #[test]
     fn test_encapsulate_gadget() {
         let mut rng = ChaCha8Rng::seed_from_u64(0u64);
         let c = FrodoKemEncapsulateCircuit::<Frodo640>::default();
+
+        let before = std::time::Instant::now();
         let params = groth16::generate_random_parameters::<Bls12, _, _>(c, &mut rng).unwrap();
+        println!("Time to generate parameters: {:?}", before.elapsed());
+
         let pvk = groth16::prepare_verifying_key(&params.vk);
 
         let scheme =
