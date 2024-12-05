@@ -1,14 +1,16 @@
-use bellman::groth16::{ParameterSource, PreparedVerifyingKey, Proof};
+use bellman::groth16::{ParameterSource, Proof, VerifyingKey};
 use bellman::*;
-use blsful::inner_types::{Bls12, Scalar};
+use blsful::inner_types::{Bls12, Curve, G1Projective, Scalar};
 
 use digest::{ExtendableOutput, ExtendableOutputReset, Update};
+use elliptic_curve_tools::SumOfProducts;
 use frodo_kem_rs::hazmat::{
-    Ciphertext, CiphertextRef, EncryptionKeyRef, Expanded, Kem, Params, Sample, SharedSecret,
+    Ciphertext, CiphertextRef, EncryptionKey, EncryptionKeyRef, Expanded, Kem, Params, Sample, SharedSecret,
 };
 use rand_core::CryptoRngCore;
 use std::marker::PhantomData;
-use std::ops::Index;
+use std::ops::{Index, Neg};
+use pairing::{Engine, MillerLoopResult, MultiMillerLoop};
 use zeroize::Zeroize;
 
 /// A gadget for a 16-bit value add, multiply, and range operations
@@ -151,6 +153,49 @@ impl<'a> MatrixView<'a> {
     }
 }
 
+#[derive(Debug, Clone)]
+pub struct FrodoKemCircuitPublicKey<E: MultiMillerLoop> {
+    acc: E::G1,
+    alpha_g1_beta_g2: E::Gt,
+    neg_gamma_g2: E::G2Prepared,
+    neg_delta_g2: E::G2Prepared,
+    ic: Vec<E::G1Affine>
+}
+
+impl FrodoKemCircuitPublicKey<Bls12> {
+    pub fn from_kem_public_key<K>(
+        public_key: &EncryptionKey<K>,
+        kem: &K,
+        verifying_key: &VerifyingKey<Bls12>,
+    ) -> Self
+        where K: Kem
+    {
+        let mut matrix_a = vec![0u16; K::N_X_N];
+        kem.expand_a(public_key.seed_a(), &mut matrix_a);
+        let mut pk_matrix_b = vec![0u16; K::N_X_N_BAR];
+        kem.unpack(public_key.matrix_b(), &mut pk_matrix_b);
+
+        let mut inputs =
+            matrix_a.iter().chain(pk_matrix_b.iter())
+                .zip(verifying_key.ic.iter().skip(2)) // 1 is the constraint::ONE, 2 is the modulus
+                .map(|(i, p)| (Scalar::from(*i), G1Projective::from(*p)))
+                .collect::<Vec<_>>();
+        inputs.insert(0, (Scalar::from(65536u32), G1Projective::from(verifying_key.ic[1])));
+
+        let ic = (&verifying_key.ic[1 + inputs.len()..]).to_vec();
+
+        let acc = verifying_key.ic[0] + <G1Projective as SumOfProducts>::sum_of_products(inputs.as_slice());
+
+        Self {
+            acc,
+            alpha_g1_beta_g2: Bls12::pairing(&verifying_key.alpha_g1, &verifying_key.beta_g2),
+            neg_gamma_g2: verifying_key.gamma_g2.neg().into(),
+            neg_delta_g2: verifying_key.delta_g2.neg().into(),
+            ic
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy)]
 pub struct FrodoKemEncapsulateCircuit<'a, P: Params> {
     /// The public key matrix a expanded
@@ -190,7 +235,7 @@ impl<'a, P: Params> Default for FrodoKemEncapsulateCircuit<'a, P> {
 
 impl<'a, P: Params> Circuit<Scalar> for FrodoKemEncapsulateCircuit<'a, P> {
     fn synthesize<CS: ConstraintSystem<Scalar>>(self, cs: &mut CS) -> Result<(), SynthesisError> {
-        let modulus = cs.alloc(|| "16-bit modulus", || Ok(Scalar::from(65536u32)))?;
+        let modulus = cs.alloc_input(|| "16-bit modulus", || Ok(Scalar::from(65536u32)))?;
 
         // allocate the public inputs
         // seed_a expanded
@@ -240,6 +285,7 @@ impl<'a, P: Params> Circuit<Scalar> for FrodoKemEncapsulateCircuit<'a, P> {
                 modulus,
             });
         }
+
 
         // allocate the witness data
         let mut matrix_s = Vec::with_capacity(P::N_X_N_BAR);
@@ -539,40 +585,43 @@ impl<P: Params, E: Expanded, S: Sample> FrodoKemWithZkp<P, E, S> {
         (ct, ss, proof)
     }
 
-    pub fn verify_encapsulated_correctness<'a, I, C>(
+    pub fn verify_encapsulated_correctness<'a, C>(
         &self,
-        public_key: I,
+        public_key: &FrodoKemCircuitPublicKey<Bls12>,
         ciphertext: C,
         proof: &Proof<Bls12>,
-        prepared_verifying_key: &PreparedVerifyingKey<Bls12>,
     ) -> Result<(), String>
     where
-        I: Into<EncryptionKeyRef<'a, Self>>,
         C: Into<CiphertextRef<'a, Self>>,
     {
         let ciphertext = ciphertext.into();
-        let public_key = public_key.into();
-
-        let mut matrix_a = vec![0u16; Self::N_X_N];
-        self.expand_a(public_key.seed_a(), &mut matrix_a);
-        let mut pk_matrix_b = vec![0u16; Self::N_X_N_BAR];
-        self.unpack(public_key.matrix_b(), &mut pk_matrix_b);
 
         let mut matrix_c1 = vec![0u16; Self::N_X_N_BAR];
         self.unpack(ciphertext.c1(), &mut matrix_c1);
         let mut matrix_c2 = vec![0u16; Self::N_BAR_X_N_BAR];
         self.unpack(ciphertext.c2(), &mut matrix_c2);
 
-        let inputs = matrix_a
-            .iter()
-            .chain(pk_matrix_b.iter())
-            .chain(matrix_c1.iter())
+        let inputs =
+            matrix_c1.iter()
             .chain(matrix_c2.iter())
-            .map(|i| Scalar::from(*i))
+            .zip(public_key.ic.iter())
+            .map(|(i, p)| (Scalar::from(*i), G1Projective::from(*p)))
             .collect::<Vec<_>>();
+
+        let acc = public_key.acc + <G1Projective as SumOfProducts>::sum_of_products(inputs.as_slice());
         let before = std::time::Instant::now();
-        let res = groth16::verify_proof(prepared_verifying_key, proof, inputs.as_slice())
-            .map_err(|e| e.to_string());
+        let res = if public_key.alpha_g1_beta_g2
+            == Bls12::multi_miller_loop(&[
+            (&proof.a, &proof.b.into()),
+            (&acc.to_affine(), &public_key.neg_gamma_g2),
+            (&proof.c, &public_key.neg_delta_g2),
+        ])
+            .final_exponentiation()
+        {
+            Ok(())
+        } else {
+            Err("invalid proof".to_string())
+        };
         println!("Time to verify proof: {:?}", before.elapsed());
         res
     }
@@ -823,11 +872,12 @@ mod tests {
         let params = groth16::generate_random_parameters::<Bls12, _, _>(c, &mut rng).unwrap();
         println!("Time to generate parameters: {:?}", before.elapsed());
 
-        let pvk = groth16::prepare_verifying_key(&params.vk);
+        // let pvk = groth16::prepare_verifying_key(&params.vk);
 
         let scheme =
             FrodoKemWithZkp::<Frodo640, FrodoAes<Frodo640>, FrodoCdfSample<Frodo640>>::default();
         let (pk, _sk) = scheme.generate_keypair(&mut rng);
+
         let (ct, _ss, proof) = scheme.encapsulate_with_zkp(
             &pk,
             &[3u8; Frodo640::BYTES_MU],
@@ -836,7 +886,13 @@ mod tests {
             &mut rng,
         );
 
-        let res = scheme.verify_encapsulated_correctness(&pk, &ct, &proof, &pvk);
+        let pvk = FrodoKemCircuitPublicKey::from_kem_public_key(
+            &pk,
+            &scheme,
+            &params.vk,
+        );
+
+        let res = scheme.verify_encapsulated_correctness(&pvk, &ct, &proof);
         println!("{:?}", res);
     }
 }
