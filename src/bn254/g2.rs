@@ -615,11 +615,17 @@ impl CofactorGroup for G2Projective {
     type Subgroup = Self;
 
     fn clear_cofactor(&self) -> Self::Subgroup {
-        *self
+        const COFACTOR: Fr = Fr::new(BigInt::new([
+            0x345f2299c0f9fa8d,
+            0x06ceecda572a2489,
+            0xb85045b68181585e,
+            0x30644e72e131a029,
+        ]));
+        Self(self.0 * COFACTOR)
     }
 
     fn into_subgroup(self) -> CtOption<Self::Subgroup> {
-        CtOption::new(self, Choice::from(1u8))
+        CtOption::new(self.clear_cofactor(), Choice::from(1u8))
     }
 
     fn is_torsion_free(&self) -> Choice {
