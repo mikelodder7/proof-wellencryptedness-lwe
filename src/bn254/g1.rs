@@ -1,4 +1,4 @@
-use crate::bn254::scalar::Scalar;
+use super::Scalar;
 use ark_bn254::{Fq, Fr, G1Affine as Bn254G1Affine, G1Projective as Bn254G1Projective};
 use ark_ec::{AffineRepr, PrimeGroup as _};
 use ark_ff::{AdditiveGroup, BigInt, BigInteger, Field, One, PrimeField, Zero};
@@ -126,35 +126,17 @@ impl ConstantTimeEq for G1Affine {
 
 impl ConditionallySelectable for G1Affine {
     fn conditional_select(a: &Self, b: &Self, choice: Choice) -> Self {
-        let mut res_x = [0; 4];
-        let mut res_y = [0; 4];
-        let lhs_x =
-            a.0.x()
-                .expect("x coordinate is not defined")
-                .into_bigint()
-                .0;
-        let rhs_x =
-            b.0.x()
-                .expect("x coordinate is not defined")
-                .into_bigint()
-                .0;
-        let lhs_y =
-            a.0.x()
-                .expect("y coordinate is not defined")
-                .into_bigint()
-                .0;
-        let rhs_y =
-            b.0.x()
-                .expect("y coordinate is not defined")
-                .into_bigint()
-                .0;
-        for i in 0..4 {
-            res_x[i] = u64::conditional_select(&lhs_x[i], &rhs_x[i], choice);
-            res_y[i] = u64::conditional_select(&lhs_y[i], &rhs_y[i], choice);
-        }
         Self(Bn254G1Affine::new_unchecked(
-            Fq::new_unchecked(BigInt::new(res_x)),
-            Fq::new_unchecked(BigInt::new(res_y)),
+            G1Projective::fq_conditional_select(
+                &a.0.x().expect("x coordinate is not defined"),
+                &b.0.x().expect("x coordinate is not defined"),
+                choice,
+            ),
+            G1Projective::fq_conditional_select(
+                &a.0.y().expect("y coordinate is not defined"),
+                &b.0.y().expect("y coordinate is not defined"),
+                choice,
+            ),
         ))
     }
 }
@@ -295,7 +277,7 @@ bytes_impl!(
     |bytes: &[u8]| {
         Bn254G1Affine::deserialize_compressed(bytes)
             .map(Self)
-            .map_err(|_| "failed to deserialize compressed Bn254G1Affine".to_string())
+            .map_err(|_| "failed to deserialize compressed G1Affine".to_string())
     }
 );
 
@@ -307,7 +289,7 @@ serde_impl!(
             .map(Self)
             .map_err(|_| {
                 serdect::serde::de::Error::custom(
-                    "failed to deserialize compressed Bn254G1Affine".to_string(),
+                    "failed to deserialize compressed G1Affine".to_string(),
                 )
             })
     },
@@ -448,24 +430,10 @@ impl PartialEq for G1Projective {
 
 impl ConditionallySelectable for G1Projective {
     fn conditional_select(a: &Self, b: &Self, choice: Choice) -> Self {
-        let mut res_x = [0; 4];
-        let mut res_y = [0; 4];
-        let mut res_z = [0; 4];
-        let lhs_x = a.0.x.into_bigint().0;
-        let rhs_x = b.0.x.into_bigint().0;
-        let lhs_y = a.0.y.into_bigint().0;
-        let rhs_y = b.0.y.into_bigint().0;
-        let lhs_z = a.0.z.into_bigint().0;
-        let rhs_z = b.0.z.into_bigint().0;
-        for i in 0..4 {
-            res_x[i] = u64::conditional_select(&lhs_x[i], &rhs_x[i], choice);
-            res_y[i] = u64::conditional_select(&lhs_y[i], &rhs_y[i], choice);
-            res_z[i] = u64::conditional_select(&lhs_z[i], &rhs_z[i], choice);
-        }
         Self(Bn254G1Projective::new_unchecked(
-            Fq::new_unchecked(BigInt::new(res_x)),
-            Fq::new_unchecked(BigInt::new(res_y)),
-            Fq::new_unchecked(BigInt::new(res_z)),
+            Self::fq_conditional_select(&a.0.x, &b.0.x, choice),
+            Self::fq_conditional_select(&a.0.y, &b.0.y, choice),
+            Self::fq_conditional_select(&a.0.z, &b.0.z, choice),
         ))
     }
 }
@@ -749,14 +717,14 @@ impl G1Projective {
         ]
     }
 
-    fn fq_from_okm(okm: &[u8]) -> Fq {
+    pub(crate) fn fq_from_okm(okm: &[u8]) -> Fq {
         debug_assert_eq!(okm.len(), 48);
 
         let inner: U256 = (U384::from_be_slice(okm) % MODULUS_U384).resize();
         Fq::new(BigInt::new(inner.to_words()))
     }
 
-    fn fq_is_square(u: &Fq) -> Choice {
+    pub(crate) fn fq_is_square(u: &Fq) -> Choice {
         let res = u.pow(Fq::MODULUS_MINUS_ONE_DIV_TWO.0);
         Choice::from(if res.is_zero() | res.is_one() {
             1u8
@@ -765,7 +733,7 @@ impl G1Projective {
         })
     }
 
-    fn fq_conditional_select(a: &Fq, b: &Fq, choice: Choice) -> Fq {
+    pub(crate) fn fq_conditional_select(a: &Fq, b: &Fq, choice: Choice) -> Fq {
         let mut res = [0u64; 4];
         let a = a.into_bigint().0;
         let b = b.into_bigint().0;
@@ -776,39 +744,33 @@ impl G1Projective {
         Fq::new(BigInt::new(res))
     }
 
-    fn fq_sgn0(u: &Fq) -> Choice {
+    pub(crate) fn fq_sgn0(u: &Fq) -> Choice {
         let res = u.into_bigint().0[0] & 1;
         Choice::from(res as u8)
     }
 
-    fn fq_conditional_negate(u: &Fq, choice: Choice) -> Fq {
-        let mut res = [0u64; 4];
-        let a = u.into_bigint().0;
-        let neg_a = (-*u).into_bigint().0;
-
-        for i in 0..4 {
-            res[i] = u64::conditional_select(&a[i], &neg_a[i], choice);
-        }
-        Fq::new(BigInt::new(res))
+    pub(crate) fn fq_conditional_negate(u: &Fq, choice: Choice) -> Fq {
+        let neg_u = -*u;
+        Self::fq_conditional_select(u, &neg_u, choice)
     }
 
     fn map_to_curve(u: &Fq) -> Self {
-        let z = Fq::ONE;
-        let three = Fq::from(3);
-        let c1 = Fq::from(4);
-        let c2 = Fq::new(BigInt::new([
+        const Z: Fq = Fq::ONE;
+        const THREE: Fq = Fq::new(BigInt::new([3, 0, 0, 0]));
+        const C1: Fq = Fq::new(BigInt::new([4, 0, 0, 0]));
+        const C2: Fq = Fq::new(BigInt::new([
             0x9e10460b6c3e7ea3,
             0xcbc0b548b438e546,
             0xdc2822db40c0ac2e,
             0x183227397098d014,
         ]));
-        let c3 = Fq::new(BigInt::new([
+        const C3: Fq = Fq::new(BigInt::new([
             0x5d8d1cc5dffffffa,
             0x53c98fc6b36d713d,
             0x6789af3a83522eb3,
             0x0000000000000001,
         ]));
-        let c4 = Fq::new(BigInt::new([
+        const C4: Fq = Fq::new(BigInt::new([
             0x69602eb24829a9bd,
             0xdd2b2385cd7b4384,
             0xe81ac1e7808072c9,
@@ -816,7 +778,7 @@ impl G1Projective {
         ]));
 
         let mut tv1 = u.square(); //    1.  tv1 = u²
-        tv1 *= c1; //    2.  tv1 = tv1 * c1
+        tv1 *= C1; //    2.  tv1 = tv1 * c1
         let tv2 = Fq::ONE + tv1; //    3.  tv2 = 1 + tv1
         tv1 = Fq::ONE - tv1; //    4.  tv1 = 1 - tv1
         let mut tv3 = tv1 * tv2; //    5.  tv3 = tv1 * tv2
@@ -824,29 +786,29 @@ impl G1Projective {
         tv3 = tv3.inverse().expect("to not be zero"); //    6.  tv3 = inv0(tv3)
         let mut tv4 = *u * tv1; //    7.  tv4 = u * tv1
         tv4 *= tv3; //    8.  tv4 = tv4 * tv3
-        tv4 *= c3; //    9.  tv4 = tv4 * c3
-        let x1 = c2 - tv4; //    10.  x1 = c2 - tv4
+        tv4 *= C3; //    9.  tv4 = tv4 * c3
+        let x1 = C2 - tv4; //    10.  x1 = c2 - tv4
 
         let mut gx1 = x1.square(); //    11. gx1 = x1²
                                    //12. gx1 = gx1 + A  It is crucial to include this step if the curve has nonzero A coefficient.
         gx1 *= x1; //    13. gx1 = gx1 * x1
-        gx1 += three; //    14. gx1 = gx1 + B
+        gx1 += THREE; //    14. gx1 = gx1 + B
 
         // let gx1NotSquare: i32 = if gx1.legendre().is_qr() {0} else {-1};    //    15.  e1 = is_square(gx1)
         // gx1NotSquare = 0 if gx1 is a square, -1 otherwise
 
-        let x2 = c2 + tv4; //    16.  x2 = c2 + tv4
+        let x2 = C2 + tv4; //    16.  x2 = c2 + tv4
         let mut gx2 = x2.square(); //    17. gx2 = x2²
                                    //    18. gx2 = gx2 + A     See line 12
         gx2 *= x2; //    19. gx2 = gx2 * x2
-        gx2 += three; //    20. gx2 = gx2 + B
+        gx2 += THREE; //    20. gx2 = gx2 + B
 
         let mut x3 = tv2.square(); //    22.  x3 = tv2²
         x3 *= tv3; //    23.  x3 = x3 * tv3
         x3 = x3.square(); //    24.  x3 = x3²
-        x3 *= c4; //    25.  x3 = x3 * c4
+        x3 *= C4; //    25.  x3 = x3 * c4
 
-        x3 += z; //    26.  x3 = x3 + Z
+        x3 += Z; //    26.  x3 = x3 + Z
 
         let e1 = Self::fq_is_square(&gx1);
         let mut x = Self::fq_conditional_select(&x3, &x1, e1); //    27.   x = CMOV(x3, x1, e1)   # x = x1 if gx1 is square, else x = x3
@@ -857,7 +819,7 @@ impl G1Projective {
         let mut gx = x.square(); //    29.  gx = x²
                                  //    30.  gx = gx + A
         gx *= x; //    31.  gx = gx * x
-        gx += three; //    32.  gx = gx + B
+        gx += THREE; //    32.  gx = gx + B
 
         let mut y = gx.sqrt().expect("sqrt to work"); //    33.   y = sqrt(gx)
 
