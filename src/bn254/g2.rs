@@ -700,7 +700,7 @@ impl G2Projective {
         ]
     }
 
-    fn fq2_from_okm(okm: &[u8]) -> Fq2 {
+    pub(crate) fn fq2_from_okm(okm: &[u8]) -> Fq2 {
         debug_assert_eq!(okm.len(), 96);
 
         let c0 = G1Projective::fq_from_okm(&okm[..48]);
@@ -708,7 +708,7 @@ impl G2Projective {
         Fq2::new(c0, c1)
     }
 
-    fn fq2_is_square(u: &Fq2) -> Choice {
+    pub(crate) fn fq2_is_square(u: &Fq2) -> Choice {
         let res = (u.c0.square() + u.c1.square()).pow(Fq::MODULUS_MINUS_ONE_DIV_TWO.0);
         Choice::from(if res.is_zero() | res.is_one() {
             1u8
@@ -717,7 +717,7 @@ impl G2Projective {
         })
     }
 
-    fn fq2_conditional_select(a: &Fq2, b: &Fq2, choice: Choice) -> Fq2 {
+    pub(crate) fn fq2_conditional_select(a: &Fq2, b: &Fq2, choice: Choice) -> Fq2 {
         let mut res_c0 = [0; 4];
         let mut res_c1 = [0; 4];
 
@@ -735,7 +735,7 @@ impl G2Projective {
         Fq2::new(Fq::new(BigInt::new(res_c0)), Fq::new(BigInt::new(res_c1)))
     }
 
-    fn fq2_sgn0(u: &Fq2) -> Choice {
+    pub(crate) fn fq2_sgn0(u: &Fq2) -> Choice {
         let c0 = u.c0.into_bigint();
         let c1 = u.c1.into_bigint();
 
@@ -747,7 +747,7 @@ impl G2Projective {
         Choice::from(if res { 1u8 } else { 0u8 })
     }
 
-    fn fq2_conditional_negate(u: &Fq2, choice: Choice) -> Fq2 {
+    pub(crate) fn fq2_conditional_negate(u: &Fq2, choice: Choice) -> Fq2 {
         let neg_a = -*u;
 
         Self::fq2_conditional_select(u, &neg_a, choice)
