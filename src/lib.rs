@@ -3,7 +3,6 @@ use bn254::*;
 
 use bellman::groth16::{ParameterSource, Proof, VerifyingKey};
 use bellman::*;
-// use blsful::inner_types::{Bls12, Curve, G1Projective, Scalar};
 
 use digest::{ExtendableOutput, ExtendableOutputReset, Update};
 use elliptic_curve::group::Curve;
@@ -170,30 +169,18 @@ pub struct FrodoKemCircuitPublicKey<E: MultiMillerLoop> {
 impl FrodoKemCircuitPublicKey<Bn254> {
     pub fn from_kem_public_key<K>(
         public_key: &EncryptionKey<K>,
-        kem: &K,
+        _kem: &K,
         verifying_key: &VerifyingKey<Bn254>,
     ) -> Self
     where
         K: Kem,
     {
-        let mut matrix_a = vec![0u16; K::N_X_N];
-        kem.expand_a(public_key.seed_a(), &mut matrix_a);
-        let mut pk_matrix_b = vec![0u16; K::N_X_N_BAR];
-        kem.unpack(public_key.matrix_b(), &mut pk_matrix_b);
-
-        let mut inputs = matrix_a
+        let inputs = EncryptionKeyRef::from(public_key)
+            .as_ref()
             .iter()
-            .chain(pk_matrix_b.iter())
-            .zip(verifying_key.ic.iter().skip(2)) // 1 is the constraint::ONE, 2 is the modulus
-            .map(|(i, p)| (Scalar::from(*i), G1Projective::from(*p)))
+            .zip(verifying_key.ic.iter().skip(1)) // 1 is the constraint::ONE
+            .map(|(&i, &p)| (Scalar::from(i), G1Projective::from(p)))
             .collect::<Vec<_>>();
-        inputs.insert(
-            0,
-            (
-                Scalar::from(65536u32),
-                G1Projective::from(verifying_key.ic[1]),
-            ),
-        );
 
         let ic = (&verifying_key.ic[1 + inputs.len()..]).to_vec();
 
@@ -457,6 +444,64 @@ impl<'a, P: Params> FrodoKemEncapsulateCircuit<'a, P> {
     }
 }
 
+#[derive(Debug, Clone, Copy)]
+pub struct FrodoKemEncapsulateCircuit2<'a, P: Params> {
+    ct: Option<CiphertextRef<'a, P>>,
+    pk: Option<EncryptionKeyRef<'a, P>>,
+}
+
+impl<'a, P: Params> Default for FrodoKemEncapsulateCircuit2<'a, P> {
+    fn default() -> Self {
+        Self { ct: None, pk: None }
+    }
+}
+
+impl<'a, P: Params> Circuit<Scalar> for FrodoKemEncapsulateCircuit2<'a, P> {
+    fn synthesize<CS: ConstraintSystem<Scalar>>(self, cs: &mut CS) -> Result<(), SynthesisError> {
+        let preimage_bits = match (self.pk, self.ct) {
+            (Some(pk), Some(ct)) => bits_to_gadgets(
+                pk.as_ref()
+                    .iter()
+                    .chain(ct.as_ref().iter())
+                    .flat_map(|&v| (0..8).rev().map(move |i| (v >> i) & 1 == 1))
+                    .map(|b| Some(b)),
+                cs,
+            )?,
+            _ => bits_to_gadgets(
+                std::iter::repeat_n(None, P::CIPHERTEXT_LENGTH + P::PUBLIC_KEY_LENGTH),
+                cs,
+            )?,
+        };
+
+        gadgets::multipack::pack_into_inputs(
+            cs.namespace(|| "public key and ciphertext"),
+            &preimage_bits,
+        )?;
+
+        let _hash = gadgets::sha256::sha256(cs, preimage_bits.as_slice())?;
+        Ok(())
+    }
+}
+
+fn bits_to_gadgets<I, CS>(
+    iter: I,
+    cs: &mut CS,
+) -> Result<Vec<gadgets::boolean::Boolean>, SynthesisError>
+where
+    I: Iterator<Item = Option<bool>>,
+    CS: ConstraintSystem<Scalar>,
+{
+    iter.enumerate()
+        .map(|(i, b)| {
+            gadgets::boolean::AllocatedBit::alloc(
+                cs.namespace(|| format!("ciphertext bit {}", i)),
+                b,
+            )
+        })
+        .map(|b| b.map(gadgets::boolean::Boolean::from))
+        .collect::<Result<Vec<_>, _>>()
+}
+
 #[derive(Copy, Clone, Default, Debug, Eq, PartialEq, Ord, PartialOrd, Hash)]
 pub struct FrodoKemWithZkp<P: Params, E: Expanded, S: Sample>(pub PhantomData<(P, E, S)>);
 
@@ -575,16 +620,11 @@ impl<P: Params, E: Expanded, S: Sample> FrodoKemWithZkp<P, E, S> {
         shake.update(&g2_out[Self::BYTES_SEED_SE..]);
         let ss = SharedSecret::try_from(shake.finalize_boxed(P::SHARED_SECRET_LENGTH)).unwrap();
 
-        let circuit = FrodoKemEncapsulateCircuit::<Self>::new(
-            &matrix_a,
-            s,
-            &pk_matrix_b,
-            ep,
-            epp,
-            &matrix_b,
-            &matrix_c,
-            &mu_encoded,
-        );
+        let circuit = FrodoKemEncapsulateCircuit2::<Self> {
+            ct: Some(CiphertextRef::from(&ct)),
+            pk: Some(public_key),
+        };
+
         let before = std::time::Instant::now();
         let proof = groth16::create_random_proof(circuit, params, &mut rng).unwrap();
         println!("Time to create proof: {:?}", before.elapsed());
@@ -644,249 +684,19 @@ impl<P: Params, E: Expanded, S: Sample> FrodoKemWithZkp<P, E, S> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use bellman::{groth16, Circuit, ConstraintSystem, SynthesisError};
+    use bellman::groth16;
     use frodo_kem_rs::hazmat::*;
-    use rand::Rng;
     use rand_chacha::ChaCha8Rng;
     use rand_core::SeedableRng;
 
     #[test]
-    fn test_add_gadget() {
-        #[derive(Default, Copy, Clone)]
-        struct Add16BitCircuit {
-            a: Option<u16>,
-            b: Option<u16>,
-        }
-
-        impl Circuit<Scalar> for Add16BitCircuit {
-            fn synthesize<CS: ConstraintSystem<Scalar>>(
-                self,
-                cs: &mut CS,
-            ) -> Result<(), SynthesisError> {
-                // See what happens when overflow
-
-                let a = self.a.unwrap_or_default();
-                let b = self.b.unwrap_or_default();
-                let sum = a.wrapping_add(b);
-                let raw_sum = (a as u32) + (b as u32);
-                let quotient = raw_sum / 65536;
-
-                let a_var = cs.alloc(|| "a", || Ok(Scalar::from(a)))?;
-                let b_var = cs.alloc(|| "b", || Ok(Scalar::from(b)))?;
-                let modulus = cs.alloc(|| "modulus", || Ok(Scalar::from(65536u32)))?;
-                let sum = cs.alloc_input(|| "c", || Ok(Scalar::from(sum)))?;
-                let raw_sum = cs.alloc(|| "raw_sum", || Ok(Scalar::from(raw_sum)))?;
-                let quotient_var = cs.alloc(|| "quotient", || Ok(Scalar::from(quotient)))?;
-
-                cs.enforce(
-                    || "addition wrap",
-                    |lc| lc + a_var + b_var,
-                    |lc| lc + CS::one(),
-                    |lc| lc + raw_sum,
-                );
-                cs.enforce(
-                    || "addition modulus",
-                    |lc| lc + quotient_var,
-                    |lc| lc + modulus,
-                    |lc| lc + raw_sum - sum,
-                );
-                Ok(())
-            }
-        }
-
-        let mut rng = ChaCha8Rng::seed_from_u64(0u64);
-        let mut circuit = Add16BitCircuit::default();
-        let params = groth16::generate_random_parameters::<Bn254, _, _>(circuit, &mut rng).unwrap();
-        let pvk = groth16::prepare_verifying_key(&params.vk);
-
-        for _ in 0..10 {
-            let a = rng.gen();
-            let b = rng.gen();
-            circuit.a = Some(a);
-            circuit.b = Some(b);
-
-            let proof = groth16::create_random_proof(circuit, &params, &mut rng).unwrap();
-            let c = a.wrapping_add(b);
-            let sc_c = Scalar::from(c);
-            let res = groth16::verify_proof(&pvk, &proof, &[sc_c]);
-            println!("{:?}", res);
-        }
-    }
-
-    #[test]
-    fn test_mul_gadget() {
-        struct Mul16BitCircuit;
-
-        impl Circuit<Scalar> for Mul16BitCircuit {
-            fn synthesize<CS: ConstraintSystem<Scalar>>(
-                self,
-                cs: &mut CS,
-            ) -> Result<(), SynthesisError> {
-                // See what happens when overflow
-
-                let a = 0x7FFFu16;
-                let b = 0xFFF0u16;
-                let c = a.wrapping_mul(b);
-                let raw_mul = (a as u32) * (b as u32);
-
-                let quotient = raw_mul / 65536;
-
-                let a_var = cs.alloc(|| "a", || Ok(Scalar::from(a)))?;
-                let b_var = cs.alloc(|| "b", || Ok(Scalar::from(b)))?;
-                let c_var = cs.alloc_input(|| "c", || Ok(Scalar::from(c)))?;
-
-                let modulus = cs.alloc(|| "modulus", || Ok(Scalar::from(65536u32)))?;
-                let prod_var = cs.alloc(|| "product", || Ok(Scalar::from(raw_mul)))?;
-                let quotient_var = cs.alloc(|| "quotient", || Ok(Scalar::from(quotient)))?;
-
-                // raw_product = a * b
-                cs.enforce(
-                    || "raw product",
-                    |lc| lc + a_var,
-                    |lc| lc + b_var,
-                    |lc| lc + prod_var,
-                );
-                // raw_product = quotient * modulus + c
-                cs.enforce(
-                    || "product modulus",
-                    |lc| lc + quotient_var,
-                    |lc| lc + modulus,
-                    |lc| lc + prod_var - c_var,
-                );
-                Ok(())
-            }
-        }
-
-        let mut rng = ChaCha8Rng::seed_from_u64(0u64);
-        let params =
-            groth16::generate_random_parameters::<Bn254, _, _>(Mul16BitCircuit, &mut rng).unwrap();
-        let pvk = groth16::prepare_verifying_key(&params.vk);
-        let proof = groth16::create_random_proof(Mul16BitCircuit, &params, &mut rng).unwrap();
-        let a = 0x7FFFu16;
-        let b = 0xFFF0u16;
-        let c = a.wrapping_mul(b);
-        let sc_c = Scalar::from(c);
-        let res = groth16::verify_proof(&pvk, &proof, &[sc_c]);
-        println!("{:?}", res);
-    }
-
-    #[test]
-    fn test_matrix_multiply() {
-        #[derive(Copy, Clone)]
-        struct MatrixGadget {
-            /// 2x3
-            matrix_a: [u16; 6],
-            /// 3 x 2
-            matrix_b: [u16; 6],
-            /// 2 x 2
-            matrix_c: [u16; 4],
-        }
-
-        impl Default for MatrixGadget {
-            fn default() -> Self {
-                Self {
-                    matrix_a: [0; 6],
-                    matrix_b: [0; 6],
-                    matrix_c: [0; 4],
-                }
-            }
-        }
-
-        impl Circuit<Scalar> for MatrixGadget {
-            fn synthesize<CS: ConstraintSystem<Scalar>>(
-                self,
-                cs: &mut CS,
-            ) -> Result<(), SynthesisError> {
-                let modulus = cs.alloc(|| "16-bit modulus", || Ok(Scalar::from(65536u32)))?;
-                let mut c = Vec::with_capacity(4);
-
-                for i in 0..4 {
-                    let var = cs.alloc_input(
-                        || format!("c_{}", i),
-                        || Ok(Scalar::from(self.matrix_c[i])),
-                    )?;
-                    c.push(Uint16 {
-                        value: self.matrix_c[i],
-                        variable: var,
-                        modulus,
-                    })
-                }
-
-                let mut a = Vec::with_capacity(6);
-                for i in 0..6 {
-                    let var =
-                        cs.alloc(|| format!("a_{}", i), || Ok(Scalar::from(self.matrix_a[i])))?;
-                    a.push(Uint16 {
-                        value: self.matrix_a[i],
-                        variable: var,
-                        modulus,
-                    })
-                }
-
-                let mut b = Vec::with_capacity(6);
-                for i in 0..6 {
-                    let var =
-                        cs.alloc(|| format!("b_{}", i), || Ok(Scalar::from(self.matrix_b[i])))?;
-                    b.push(Uint16 {
-                        value: self.matrix_b[i],
-                        variable: var,
-                        modulus,
-                    })
-                }
-
-                for i in 0..2 {
-                    for j in 0..2 {
-                        let mut sum = Option::<Uint16>::None;
-                        for k in 0..3 {
-                            let prod = a[i * 3 + k].add(
-                                cs.namespace(|| format!("a[{}][{}] * b[{}][{}]", i, k, k, j)),
-                                &b[3 * j + k],
-                            )?;
-                            if let Some(s) = sum {
-                                sum = Some(
-                                    s.add(cs.namespace(|| format!("sum[{}][{}]", i, j)), &prod)?,
-                                );
-                            } else {
-                                sum = Some(prod);
-                            }
-                        }
-                        let sum = sum.unwrap();
-                        sum.equal(cs.namespace(|| format!("c[{}][{}]", i, j)), &c[2 * i + j])?;
-                    }
-                }
-
-                Ok(())
-            }
-        }
-
-        let mut c = MatrixGadget::default();
-        let mut rng = ChaCha8Rng::seed_from_u64(0u64);
-        let params = groth16::generate_random_parameters::<Bn254, _, _>(c, &mut rng).unwrap();
-        let pvk = groth16::prepare_verifying_key(&params.vk);
-        c.matrix_a = [1, 2, 3, 4, 5, 6];
-        c.matrix_b = [7, 8, 9, 10, 11, 12];
-
-        let proof = groth16::create_random_proof(c, &params, &mut rng).unwrap();
-        let sc_c = [
-            Scalar::from(58u64),
-            Scalar::from(64u64),
-            Scalar::from(139u64),
-            Scalar::from(154u64),
-        ];
-        let res = groth16::verify_proof(&pvk, &proof, &sc_c);
-        println!("{:?}", res);
-    }
-
-    #[test]
     fn test_encapsulate_gadget() {
         let mut rng = ChaCha8Rng::seed_from_u64(0u64);
-        let c = FrodoKemEncapsulateCircuit::<Frodo640>::default();
+        let c = FrodoKemEncapsulateCircuit2::<Frodo640>::default();
 
         let before = std::time::Instant::now();
         let params = groth16::generate_random_parameters::<Bn254, _, _>(c, &mut rng).unwrap();
         println!("Time to generate parameters: {:?}", before.elapsed());
-
-        // let pvk = groth16::prepare_verifying_key(&params.vk);
 
         let scheme =
             FrodoKemWithZkp::<Frodo640, FrodoAes<Frodo640>, FrodoCdfSample<Frodo640>>::default();
