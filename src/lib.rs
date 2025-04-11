@@ -733,7 +733,7 @@ impl Default for KyberCircuit {
 
 impl Circuit<Scalar> for KyberCircuit {
     fn synthesize<CS: ConstraintSystem<Scalar>>(self, cs: &mut CS) -> Result<(), SynthesisError> {
-        let (preimage_bits, digest_bits) = match (self.pk, self.ct) {
+        let (mut preimage_bits, mut digest_bits) = match (self.pk, self.ct) {
             (Some(pk), Some(ct)) => {
                 let mut hasher = sha2::Sha256::default();
                 Update::update(&mut hasher, pk.as_bytes().as_ref());
@@ -774,12 +774,12 @@ impl Circuit<Scalar> for KyberCircuit {
             )?;
         }
 
+        preimage_bits.append(&mut digest_bits);
+
         gadgets::multipack::pack_into_inputs(
-            cs.namespace(|| "public key and ciphertext"),
+            cs.namespace(|| "public key, ciphertext, computed digest"),
             &preimage_bits,
         )?;
-
-        gadgets::multipack::pack_into_inputs(cs.namespace(|| "computed digest"), hash.as_ref())?;
 
         Ok(())
     }
@@ -842,14 +842,13 @@ mod tests {
             groth16::generate_random_parameters::<Bn254, _, _>(KyberCircuit::default(), &mut rng)
                 .unwrap();
         println!("Time to generate parameters: {:?}", before.elapsed());
+        let pvk = groth16::prepare_verifying_key(&params.vk);
 
         // let pvk = KyberCircuitPublicKey::from_kem_public_key(&ek, &params.vk);
         let (ct, _sk) = ek.encapsulate(&mut rng).unwrap();
         let mut c = KyberCircuit::default();
         c.pk = Some(ek.clone());
         c.ct = Some(ct.clone());
-
-        let pvk = groth16::prepare_verifying_key(&params.vk);
 
         let before = std::time::Instant::now();
         let proof: Proof<Bn254> = groth16::create_random_proof(c, &params, &mut rng).unwrap();
@@ -867,7 +866,10 @@ mod tests {
             .chain(digest.into_iter())
             .collect::<Vec<_>>();
         let bits = gadgets::multipack::bytes_to_bits_le(bytes.as_slice());
+        println!("bits.len() = {}", bits.len());
         let inputs = gadgets::multipack::compute_multipacking(&bits);
+        println!("expected inputs.len() = {}", &params.vk.ic.len());
+        println!("inputs.len() = {}", inputs.len());
 
         let res = groth16::verify_proof(&pvk, &proof, &inputs);
         println!("{:?}", res);
