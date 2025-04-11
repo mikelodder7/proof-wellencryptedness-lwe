@@ -269,3 +269,40 @@ fn fq_constant_time_eq(a: &Fq, b: &Fq) -> Choice {
     }
     res
 }
+
+#[cfg(test)]
+mod tests {
+    use elliptic_curve::Field;
+    use elliptic_curve::hash2curve::ExpandMsgXmd;
+    use super::*;
+
+    #[test]
+    fn pairings() {
+        assert_eq!(
+            Bn254::pairing(&G1Affine::from(G1Projective::GENERATOR * Scalar::from(5u32)), &G2Affine::GENERATOR),
+            Bn254::pairing(&G1Affine::GENERATOR, &G2Affine::from(G2Projective::GENERATOR * Scalar::from(5u32))),
+        );
+    }
+
+    #[test]
+    fn signature() {
+        let mut rng = rand::thread_rng();
+        let sk = Scalar::random(&mut rng);
+        let pk = G2Projective::GENERATOR * sk;
+
+        let msg = b"Hello, world!";
+        let h = G1Projective::hash::<ExpandMsgXmd<sha2::Sha256>>(msg, b"signature");
+        assert_eq!(h.is_on_curve().unwrap_u8(), 1u8);
+        let sig = h * sk;
+
+        let lhs = Bn254::pairing(&G1Affine::from(h), &G2Affine::from(pk));
+        let rhs = Bn254::pairing(&G1Affine::from(sig), &G2Affine::GENERATOR);
+        assert_eq!(lhs, rhs);
+
+        let res = Bn254::multi_miller_loop(&[
+            (&G1Affine::from(h), &G2Prepared::from(G2Affine::from(pk))),
+            (&G1Affine::from(sig), &G2Prepared::from(-G2Affine::GENERATOR)),
+        ]);
+        assert_eq!(res.final_exponentiation().is_identity().unwrap_u8(), 1u8);
+    }
+}

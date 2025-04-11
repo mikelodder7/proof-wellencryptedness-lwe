@@ -872,3 +872,16 @@ impl G1Projective {
         Self(Bn254G1Projective::new(x, y, Fq::ONE))
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_g1_ops() {
+        assert_eq!(
+            G1Projective::GENERATOR * Scalar::from(5u32),
+            G1Projective::GENERATOR.double().double() + G1Projective::GENERATOR
+        );
+    }
+}
