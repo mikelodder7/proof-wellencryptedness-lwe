@@ -4,13 +4,15 @@ use bn254::*;
 use bellman::groth16::{ParameterSource, Proof, VerifyingKey};
 use bellman::*;
 
-use digest::{ExtendableOutput, ExtendableOutputReset, Update};
+use digest::{Digest, ExtendableOutput, ExtendableOutputReset, Update};
 use elliptic_curve::group::Curve;
 use elliptic_curve_tools::SumOfProducts;
 use frodo_kem_rs::hazmat::{
     Ciphertext, CiphertextRef, EncryptionKey, EncryptionKeyRef, Expanded, Kem, Params, Sample,
     SharedSecret,
 };
+use ml_kem::array::typenum::Unsigned;
+use ml_kem::{kem::EncapsulationKey, EncodedSizeUser, KemCore, MlKem512, MlKem512Params};
 use pairing::{Engine, MultiMillerLoop};
 use rand_core::CryptoRngCore;
 use std::marker::PhantomData;
@@ -182,6 +184,7 @@ impl FrodoKemCircuitPublicKey<Bn254> {
             .map(|(&i, &p)| (Scalar::from(i), G1Projective::from(p)))
             .collect::<Vec<_>>();
 
+        println!("inputs.len() = {}", inputs.len());
         let ic = (&verifying_key.ic[1 + inputs.len()..]).to_vec();
 
         let acc = verifying_key.ic[0]
@@ -458,27 +461,63 @@ impl<'a, P: Params> Default for FrodoKemEncapsulateCircuit2<'a, P> {
 
 impl<'a, P: Params> Circuit<Scalar> for FrodoKemEncapsulateCircuit2<'a, P> {
     fn synthesize<CS: ConstraintSystem<Scalar>>(self, cs: &mut CS) -> Result<(), SynthesisError> {
-        let preimage_bits = match (self.pk, self.ct) {
-            (Some(pk), Some(ct)) => bits_to_gadgets(
-                pk.as_ref()
-                    .iter()
-                    .chain(ct.as_ref().iter())
-                    .flat_map(|&v| (0..8).rev().map(move |i| (v >> i) & 1 == 1))
-                    .map(|b| Some(b)),
-                cs,
-            )?,
-            _ => bits_to_gadgets(
-                std::iter::repeat_n(None, P::CIPHERTEXT_LENGTH + P::PUBLIC_KEY_LENGTH),
-                cs,
-            )?,
+        let (preimage_bits, digest_bits) = match (self.pk, self.ct) {
+            (Some(pk), Some(ct)) => {
+                println!("pk.len() = {}", pk.as_ref().len());
+                println!("ct.len() = {}", ct.as_ref().len());
+                let mut hasher = sha2::Sha256::default();
+                Update::update(&mut hasher, pk.as_ref());
+                Update::update(&mut hasher, ct.as_ref());
+                let digest = hasher.finalize();
+
+                (
+                    bits_to_gadgets(
+                        pk.as_ref()
+                            .iter()
+                            .chain(ct.as_ref().iter())
+                            .flat_map(|&v| (0..8).rev().map(move |i| (v >> i) & 1 == 1))
+                            .map(|b| Some(b)),
+                        cs,
+                    )?,
+                    bits_to_gadgets(
+                        digest
+                            .iter()
+                            .flat_map(|&v| (0..8).rev().map(move |i| (v >> i) & 1 == 1))
+                            .map(|b| Some(b)),
+                        cs,
+                    )?,
+                )
+            }
+            _ => (
+                bits_to_gadgets(
+                    std::iter::repeat_n(None, P::CIPHERTEXT_LENGTH + P::PUBLIC_KEY_LENGTH * 8),
+                    cs,
+                )?,
+                bits_to_gadgets(std::iter::repeat_n(None, 32 * 8), cs)?,
+            ),
         };
+
+        println!("preimage_bits.len() = {}", preimage_bits.len());
+
+        let hash = gadgets::sha256::sha256(cs.namespace(|| "sha256d"), preimage_bits.as_slice())?;
+
+        debug_assert_eq!(hash.len(), digest_bits.len());
+
+        for (i, (a_bit, b_bit)) in hash.iter().zip(digest_bits.iter()).enumerate() {
+            gadgets::boolean::Boolean::enforce_equal(
+                cs.namespace(|| format!("digest bit {}", i)),
+                a_bit,
+                b_bit,
+            )?;
+        }
 
         gadgets::multipack::pack_into_inputs(
             cs.namespace(|| "public key and ciphertext"),
             &preimage_bits,
         )?;
 
-        let _hash = gadgets::sha256::sha256(cs, preimage_bits.as_slice())?;
+        gadgets::multipack::pack_into_inputs(cs.namespace(|| "computed digest"), hash.as_ref())?;
+
         Ok(())
     }
 }
@@ -681,38 +720,156 @@ impl<P: Params, E: Expanded, S: Sample> FrodoKemWithZkp<P, E, S> {
     }
 }
 
+pub struct KyberCircuit {
+    pk: Option<EncapsulationKey<MlKem512Params>>,
+    ct: Option<ml_kem::Ciphertext<MlKem512>>,
+}
+
+impl Default for KyberCircuit {
+    fn default() -> Self {
+        Self { pk: None, ct: None }
+    }
+}
+
+impl Circuit<Scalar> for KyberCircuit {
+    fn synthesize<CS: ConstraintSystem<Scalar>>(self, cs: &mut CS) -> Result<(), SynthesisError> {
+        let (preimage_bits, digest_bits) = match (self.pk, self.ct) {
+            (Some(pk), Some(ct)) => {
+                let mut hasher = sha2::Sha256::default();
+                Update::update(&mut hasher, pk.as_bytes().as_ref());
+                Update::update(&mut hasher, &ct);
+                let digest = hasher.finalize();
+
+                (bits_to_gadgets(
+                    pk.as_bytes()
+                        .iter()
+                        .chain(ct.iter())
+                        .flat_map(|&v| (0..8).map(move |i| (v >> i) & 1 == 1))
+                        .map(|b| Some(b)),
+                    cs,
+                )?, bits_to_gadgets(
+                    digest.iter()
+                        .flat_map(|&v| (0..8).map(move |i| (v >> i) & 1 == 1))
+                        .map(|b| Some(b)), cs)?)
+            },
+            _ => (bits_to_gadgets(
+                std::iter::repeat_n(None, (
+                    <MlKem512 as KemCore>::CiphertextSize::to_usize() +
+                    <<MlKem512 as KemCore>::EncapsulationKey as EncodedSizeUser>::EncodedSize::to_usize()) * 8),
+                cs,
+            )?, bits_to_gadgets(std::iter::repeat_n(None, 32 * 8), cs)?),
+        };
+
+        println!("preimage_bits.len() = {}", preimage_bits.len());
+
+        let hash = gadgets::sha256::sha256(cs.namespace(|| "sha256d"), preimage_bits.as_slice())?;
+
+        debug_assert_eq!(hash.len(), digest_bits.len());
+
+        for (i, (a_bit, b_bit)) in hash.iter().zip(digest_bits.iter()).enumerate() {
+            gadgets::boolean::Boolean::enforce_equal(
+                cs.namespace(|| format!("digest bit {}", i)),
+                a_bit,
+                b_bit,
+            )?;
+        }
+
+        gadgets::multipack::pack_into_inputs(
+            cs.namespace(|| "public key and ciphertext"),
+            &preimage_bits,
+        )?;
+
+        gadgets::multipack::pack_into_inputs(cs.namespace(|| "computed digest"), hash.as_ref())?;
+
+        Ok(())
+    }
+}
+
+impl KyberCircuit {}
+
+#[derive(Debug, Clone)]
+pub struct KyberCircuitPublicKey<E: MultiMillerLoop> {
+    acc: E::G1,
+    alpha_g1_beta_g2: E::Gt,
+    neg_gamma_g2: E::G2Prepared,
+    neg_delta_g2: E::G2Prepared,
+    ic: Vec<E::G1Affine>,
+}
+
+impl KyberCircuitPublicKey<Bn254> {
+    pub fn from_kem_public_key(
+        public_key: &EncapsulationKey<MlKem512Params>,
+        verifying_key: &VerifyingKey<Bn254>,
+    ) -> Self {
+        let inputs = public_key
+            .as_bytes()
+            .iter()
+            .zip(verifying_key.ic.iter().skip(1)) // 1 is the constraint::ONE
+            .map(|(&i, &p)| (Scalar::from(i), G1Projective::from(p)))
+            .collect::<Vec<_>>();
+
+        println!("inputs.len() = {}", inputs.len());
+        let ic = (&verifying_key.ic[1 + inputs.len()..]).to_vec();
+
+        let acc = verifying_key.ic[0]
+            + <G1Projective as SumOfProducts>::sum_of_products(inputs.as_slice());
+
+        Self {
+            acc,
+            alpha_g1_beta_g2: Bn254::pairing(&verifying_key.alpha_g1, &verifying_key.beta_g2),
+            neg_gamma_g2: verifying_key.gamma_g2.neg().into(),
+            neg_delta_g2: verifying_key.delta_g2.neg().into(),
+            ic,
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use bellman::groth16;
-    use frodo_kem_rs::hazmat::*;
+    use ml_kem::kem::Encapsulate;
     use rand_chacha::ChaCha8Rng;
     use rand_core::SeedableRng;
 
     #[test]
     fn test_encapsulate_gadget() {
         let mut rng = ChaCha8Rng::seed_from_u64(0u64);
-        let c = FrodoKemEncapsulateCircuit2::<Frodo640>::default();
+        let (dk, ek) = MlKem512::generate(&mut rng);
 
         let before = std::time::Instant::now();
-        let params = groth16::generate_random_parameters::<Bn254, _, _>(c, &mut rng).unwrap();
+        let params =
+            groth16::generate_random_parameters::<Bn254, _, _>(KyberCircuit::default(), &mut rng)
+                .unwrap();
         println!("Time to generate parameters: {:?}", before.elapsed());
 
-        let scheme =
-            FrodoKemWithZkp::<Frodo640, FrodoAes<Frodo640>, FrodoCdfSample<Frodo640>>::default();
-        let (pk, _sk) = scheme.generate_keypair(&mut rng);
+        // let pvk = KyberCircuitPublicKey::from_kem_public_key(&ek, &params.vk);
+        let (ct, _sk) = ek.encapsulate(&mut rng).unwrap();
+        let mut c = KyberCircuit::default();
+        c.pk = Some(ek.clone());
+        c.ct = Some(ct.clone());
 
-        let (ct, _ss, proof) = scheme.encapsulate_with_zkp(
-            &pk,
-            &[3u8; Frodo640::BYTES_MU],
-            &[0u8; Frodo640::BYTES_SALT],
-            &params,
-            &mut rng,
-        );
+        let pvk = groth16::prepare_verifying_key(&params.vk);
 
-        let pvk = FrodoKemCircuitPublicKey::from_kem_public_key(&pk, &scheme, &params.vk);
+        let before = std::time::Instant::now();
+        let proof: Proof<Bn254> = groth16::create_random_proof(c, &params, &mut rng).unwrap();
+        println!("Time to create proof: {:?}", before.elapsed());
 
-        let res = scheme.verify_encapsulated_correctness(&pvk, &ct, &proof);
+        let mut hasher = sha2::Sha256::default();
+        let ek_bytes = <EncapsulationKey<MlKem512Params> as EncodedSizeUser>::as_bytes(&ek);
+        Update::update(&mut hasher, &ek_bytes);
+        Update::update(&mut hasher, ct.0.as_ref());
+        let digest = hasher.finalize();
+
+        let bytes = ek_bytes
+            .into_iter()
+            .chain(ct.into_iter())
+            .chain(digest.into_iter())
+            .collect::<Vec<_>>();
+        let bits = gadgets::multipack::bytes_to_bits_le(bytes.as_slice());
+        let inputs = gadgets::multipack::compute_multipacking(&bits);
+
+        let res = groth16::verify_proof(&pvk, &proof, &inputs);
         println!("{:?}", res);
     }
 }
