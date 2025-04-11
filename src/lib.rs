@@ -1,16 +1,18 @@
 mod bn254;
+use bn254::*;
 
 use bellman::groth16::{ParameterSource, Proof, VerifyingKey};
 use bellman::*;
-use blsful::inner_types::{Bls12, Curve, G1Projective, Scalar};
+// use blsful::inner_types::{Bls12, Curve, G1Projective, Scalar};
 
 use digest::{ExtendableOutput, ExtendableOutputReset, Update};
+use elliptic_curve::group::Curve;
 use elliptic_curve_tools::SumOfProducts;
 use frodo_kem_rs::hazmat::{
     Ciphertext, CiphertextRef, EncryptionKey, EncryptionKeyRef, Expanded, Kem, Params, Sample,
     SharedSecret,
 };
-use pairing::{Engine, MillerLoopResult, MultiMillerLoop};
+use pairing::{Engine, MultiMillerLoop};
 use rand_core::CryptoRngCore;
 use std::marker::PhantomData;
 use std::ops::{Index, Neg};
@@ -165,11 +167,11 @@ pub struct FrodoKemCircuitPublicKey<E: MultiMillerLoop> {
     ic: Vec<E::G1Affine>,
 }
 
-impl FrodoKemCircuitPublicKey<Bls12> {
+impl FrodoKemCircuitPublicKey<Bn254> {
     pub fn from_kem_public_key<K>(
         public_key: &EncryptionKey<K>,
         kem: &K,
-        verifying_key: &VerifyingKey<Bls12>,
+        verifying_key: &VerifyingKey<Bn254>,
     ) -> Self
     where
         K: Kem,
@@ -200,7 +202,7 @@ impl FrodoKemCircuitPublicKey<Bls12> {
 
         Self {
             acc,
-            alpha_g1_beta_g2: Bls12::pairing(&verifying_key.alpha_g1, &verifying_key.beta_g2),
+            alpha_g1_beta_g2: Bn254::pairing(&verifying_key.alpha_g1, &verifying_key.beta_g2),
             neg_gamma_g2: verifying_key.gamma_g2.neg().into(),
             neg_delta_g2: verifying_key.delta_g2.neg().into(),
             ic,
@@ -497,10 +499,10 @@ impl<P: Params, E: Expanded, S: Sample> FrodoKemWithZkp<P, E, S> {
         salt: &[u8],
         params: PP,
         mut rng: impl CryptoRngCore,
-    ) -> (Ciphertext<Self>, SharedSecret<Self>, Proof<Bls12>)
+    ) -> (Ciphertext<Self>, SharedSecret<Self>, Proof<Bn254>)
     where
         I: Into<EncryptionKeyRef<'a, Self>>,
-        PP: ParameterSource<Bls12>,
+        PP: ParameterSource<Bn254>,
     {
         assert_eq!(mu.len(), Self::BYTES_MU);
         assert_eq!(salt.len(), Self::BYTES_SALT);
@@ -598,9 +600,9 @@ impl<P: Params, E: Expanded, S: Sample> FrodoKemWithZkp<P, E, S> {
 
     pub fn verify_encapsulated_correctness<'a, C>(
         &self,
-        public_key: &FrodoKemCircuitPublicKey<Bls12>,
+        public_key: &FrodoKemCircuitPublicKey<Bn254>,
         ciphertext: C,
-        proof: &Proof<Bls12>,
+        proof: &Proof<Bn254>,
     ) -> Result<(), String>
     where
         C: Into<CiphertextRef<'a, Self>>,
@@ -623,7 +625,7 @@ impl<P: Params, E: Expanded, S: Sample> FrodoKemWithZkp<P, E, S> {
         let acc =
             public_key.acc + <G1Projective as SumOfProducts>::sum_of_products(inputs.as_slice());
         let res = if public_key.alpha_g1_beta_g2
-            == Bls12::multi_miller_loop(&[
+            == multi_miller_loop(&[
                 (&proof.a, &proof.b.into()),
                 (&acc.to_affine(), &public_key.neg_gamma_g2),
                 (&proof.c, &public_key.neg_delta_g2),
@@ -694,7 +696,7 @@ mod tests {
 
         let mut rng = ChaCha8Rng::seed_from_u64(0u64);
         let mut circuit = Add16BitCircuit::default();
-        let params = groth16::generate_random_parameters::<Bls12, _, _>(circuit, &mut rng).unwrap();
+        let params = groth16::generate_random_parameters::<Bn254, _, _>(circuit, &mut rng).unwrap();
         let pvk = groth16::prepare_verifying_key(&params.vk);
 
         for _ in 0..10 {
@@ -757,7 +759,7 @@ mod tests {
 
         let mut rng = ChaCha8Rng::seed_from_u64(0u64);
         let params =
-            groth16::generate_random_parameters::<Bls12, _, _>(Mul16BitCircuit, &mut rng).unwrap();
+            groth16::generate_random_parameters::<Bn254, _, _>(Mul16BitCircuit, &mut rng).unwrap();
         let pvk = groth16::prepare_verifying_key(&params.vk);
         let proof = groth16::create_random_proof(Mul16BitCircuit, &params, &mut rng).unwrap();
         let a = 0x7FFFu16;
@@ -859,7 +861,7 @@ mod tests {
 
         let mut c = MatrixGadget::default();
         let mut rng = ChaCha8Rng::seed_from_u64(0u64);
-        let params = groth16::generate_random_parameters::<Bls12, _, _>(c, &mut rng).unwrap();
+        let params = groth16::generate_random_parameters::<Bn254, _, _>(c, &mut rng).unwrap();
         let pvk = groth16::prepare_verifying_key(&params.vk);
         c.matrix_a = [1, 2, 3, 4, 5, 6];
         c.matrix_b = [7, 8, 9, 10, 11, 12];
@@ -881,7 +883,7 @@ mod tests {
         let c = FrodoKemEncapsulateCircuit::<Frodo640>::default();
 
         let before = std::time::Instant::now();
-        let params = groth16::generate_random_parameters::<Bls12, _, _>(c, &mut rng).unwrap();
+        let params = groth16::generate_random_parameters::<Bn254, _, _>(c, &mut rng).unwrap();
         println!("Time to generate parameters: {:?}", before.elapsed());
 
         // let pvk = groth16::prepare_verifying_key(&params.vk);

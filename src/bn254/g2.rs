@@ -16,7 +16,7 @@ use blsful::inner_types::{
 use elliptic_curve::bigint::U256;
 use elliptic_curve::generic_array::typenum::{U128, U64};
 use elliptic_curve::generic_array::GenericArray;
-use elliptic_curve::group::Curve;
+use elliptic_curve::group::{Curve, WnafGroup};
 use elliptic_curve::hash2curve::{ExpandMsg, Expander};
 use elliptic_curve::ops::MulByGenerator;
 use elliptic_curve::point::AffineCoordinates;
@@ -292,6 +292,28 @@ impl GroupEncoding for G2Affine {
 
     fn to_bytes(&self) -> Self::Repr {
         self.to_compressed()
+    }
+}
+
+impl UncompressedEncoding for G2Affine {
+    type Uncompressed = G2UncompressedRepr;
+
+    fn from_uncompressed(bytes: &Self::Uncompressed) -> CtOption<Self> {
+        match Self::from_uncompressed(bytes) {
+            Some(pt) => CtOption::new(pt, Choice::from(1u8)),
+            None => CtOption::new(Self::IDENTITY, Choice::from(0u8)),
+        }
+    }
+
+    fn from_uncompressed_unchecked(bytes: &Self::Uncompressed) -> CtOption<Self> {
+        match Self::from_uncompressed(bytes) {
+            Some(pt) => CtOption::new(pt, Choice::from(1u8)),
+            None => CtOption::new(Self::IDENTITY, Choice::from(0u8)),
+        }
+    }
+
+    fn to_uncompressed(&self) -> Self::Uncompressed {
+        self.to_uncompressed()
     }
 }
 
@@ -634,6 +656,23 @@ impl CofactorGroup for G2Projective {
         } else {
             0u8
         })
+    }
+}
+
+impl WnafGroup for G2Projective {
+    fn recommended_wnaf_for_num_scalars(num_scalars: usize) -> usize {
+        const RECOMMENDATIONS: [usize; 11] = [1, 3, 8, 20, 47, 126, 260, 826, 1501, 4555, 84071];
+
+        let mut ret = 4;
+        for r in &RECOMMENDATIONS {
+            if num_scalars > *r {
+                ret += 1;
+            } else {
+                break;
+            }
+        }
+
+        ret
     }
 }
 

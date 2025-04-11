@@ -1,7 +1,10 @@
-use ark_bn254::Fr;
+use ark_bn254::{Fq, Fr};
 use ark_ff::{AdditiveGroup, BigInt, Field as ArkField, PrimeField as ArkPrimeField};
 use ark_serialize::{CanonicalDeserialize, CanonicalSerialize};
+use ark_std::UniformRand;
+use blsful::inner_types::FieldBits;
 use blsful::vsss_rs::subtle::{Choice, CtOption};
+use elliptic_curve::ff::PrimeFieldBits;
 use elliptic_curve::{Field, PrimeField};
 use rand_core::RngCore;
 use std::{
@@ -11,9 +14,12 @@ use std::{
     ops::{Add, AddAssign, Div, DivAssign, Mul, MulAssign, Neg, Sub, SubAssign},
 };
 use subtle::{ConditionallySelectable, ConstantTimeEq};
+use zeroize::DefaultIsZeroes;
 
 #[derive(Debug, Copy, Clone, Default)]
 pub struct Scalar(pub Fr);
+
+impl DefaultIsZeroes for Scalar {}
 
 impl From<Fr> for Scalar {
     fn from(scalar: Fr) -> Self {
@@ -218,11 +224,7 @@ impl Field for Scalar {
     const ONE: Self = Self(Fr::ONE);
 
     fn random(mut rng: impl RngCore) -> Self {
-        let mut bytes = [0u8; 32];
-        rng.fill_bytes(&mut bytes);
-        Fr::from_random_bytes(&bytes)
-            .expect("invalid randomness")
-            .into()
+        Fr::rand(&mut rng).into()
     }
 
     fn square(&self) -> Self {
@@ -300,6 +302,23 @@ impl PrimeField for Scalar {
     const DELTA: Self = Self::from_be_bytes_unchecked(&hex_literal::hex!(
         "2c3f4b0d4dd837e7799b6d1e4da4c8e60a80a53ab530fda6e6809dffb040e6e9"
     ));
+}
+
+#[cfg(not(target_pointer_width = "64"))]
+type ReprBits = [u32; 8];
+#[cfg(target_pointer_width = "64")]
+type ReprBits = [u64; 4];
+
+impl PrimeFieldBits for Scalar {
+    type ReprBits = ReprBits;
+
+    fn to_le_bits(&self) -> FieldBits<Self::ReprBits> {
+        self.0.into_bigint().0.into()
+    }
+
+    fn char_le_bits() -> FieldBits<Self::ReprBits> {
+        Fq::MODULUS.0.into()
+    }
 }
 
 bytes_impl!(Scalar, |s: &Scalar| s.to_repr(), Scalar::from_bytes);

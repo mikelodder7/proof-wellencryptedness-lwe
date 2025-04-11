@@ -9,7 +9,7 @@ use elliptic_curve::bigint::{
 };
 use elliptic_curve::group::cofactor::CofactorGroup;
 use elliptic_curve::group::prime::{PrimeCurve, PrimeCurveAffine, PrimeGroup};
-use elliptic_curve::group::{Curve, UncompressedEncoding};
+use elliptic_curve::group::{Curve, UncompressedEncoding, WnafGroup};
 use elliptic_curve::hash2curve::{ExpandMsg, Expander};
 use elliptic_curve::ops::MulByGenerator;
 use elliptic_curve::point::AffineCoordinates;
@@ -313,6 +313,30 @@ impl GroupEncoding for G1Affine {
 
     fn to_bytes(&self) -> Self::Repr {
         self.to_compressed()
+    }
+}
+
+impl UncompressedEncoding for G1Affine {
+    type Uncompressed = G1UncompressedRepr;
+
+    fn from_uncompressed(bytes: &Self::Uncompressed) -> CtOption<Self> {
+        let pt = Bn254G1Affine::deserialize_uncompressed(&bytes[..]).ok();
+        match pt {
+            Some(pt) => CtOption::new(Self(pt), Choice::from(1u8)),
+            None => CtOption::new(Self::IDENTITY, Choice::from(0u8)),
+        }
+    }
+
+    fn from_uncompressed_unchecked(bytes: &Self::Uncompressed) -> CtOption<Self> {
+        let pt = Bn254G1Affine::deserialize_uncompressed(&bytes[..]).ok();
+        match pt {
+            Some(pt) => CtOption::new(Self(pt), Choice::from(1u8)),
+            None => CtOption::new(Self::IDENTITY, Choice::from(0u8)),
+        }
+    }
+
+    fn to_uncompressed(&self) -> Self::Uncompressed {
+        self.to_uncompressed()
     }
 }
 
@@ -651,6 +675,24 @@ impl CofactorGroup for G1Projective {
         } else {
             0u8
         })
+    }
+}
+
+impl WnafGroup for G1Projective {
+    fn recommended_wnaf_for_num_scalars(num_scalars: usize) -> usize {
+        const RECOMMENDATIONS: [usize; 12] =
+            [1, 3, 7, 20, 43, 120, 273, 563, 1630, 3128, 7933, 62569];
+
+        let mut ret = 4;
+        for r in &RECOMMENDATIONS {
+            if num_scalars > *r {
+                ret += 1;
+            } else {
+                break;
+            }
+        }
+
+        ret
     }
 }
 

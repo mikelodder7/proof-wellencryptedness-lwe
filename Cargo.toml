@@ -20,6 +20,7 @@ hex-literal = "0.4"
 pairing = "0.23"
 rand_core = "0.6"
 serdect = "0.3"
+sha2 = "0.10"
 subtle = "2.6"
 zeroize = "1"
 

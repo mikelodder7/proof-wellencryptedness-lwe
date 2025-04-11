@@ -2,10 +2,10 @@
 mod macros;
 mod g1;
 mod g2;
-mod pairing;
+mod pairings;
 mod scalar;
 
 pub use g1::*;
 pub use g2::*;
+pub use pairings::*;
 pub use scalar::*;
-pub use pairing::*;
