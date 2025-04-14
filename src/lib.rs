@@ -864,16 +864,16 @@ mod tests {
         Update::update(&mut hasher, ct.0.as_ref());
         let digest = hasher.finalize();
 
-        let bytes = ek_bytes
-            .into_iter()
-            .chain(ct.into_iter())
-            .collect::<Vec<_>>();
-        let bits = gadgets::multipack::bytes_to_bits_le(bytes.as_slice());
-        println!("bits.len() = {}", bits.len());
-        let mut inputs = gadgets::multipack::compute_multipacking(&bits);
+        // let bytes = ek_bytes
+        //     .into_iter()
+        //     .chain(ct.into_iter())
+        //     .collect::<Vec<_>>();
+        // let bits = gadgets::multipack::bytes_to_bits_le(bytes.as_slice());
+        // println!("bits.len() = {}", bits.len());
+        // let mut inputs = gadgets::multipack::compute_multipacking(&bits);
 
-        // let bits = gadgets::multipack::bytes_to_bits_le(digest.as_slice());
-        // inputs.append(&mut gadgets::multipack::compute_multipacking(&bits));
+        let bits = gadgets::multipack::bytes_to_bits(digest.as_slice());
+        let inputs = gadgets::multipack::compute_multipacking(&bits);
 
         println!("expected inputs.len() = {}", &params.vk.ic.len());
         println!("inputs.len() = {}", inputs.len());
