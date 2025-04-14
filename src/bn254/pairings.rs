@@ -272,15 +272,21 @@ fn fq_constant_time_eq(a: &Fq, b: &Fq) -> Choice {
 
 #[cfg(test)]
 mod tests {
-    use elliptic_curve::Field;
-    use elliptic_curve::hash2curve::ExpandMsgXmd;
     use super::*;
+    use elliptic_curve::hash2curve::ExpandMsgXmd;
+    use elliptic_curve::Field;
 
     #[test]
     fn pairings() {
         assert_eq!(
-            Bn254::pairing(&G1Affine::from(G1Projective::GENERATOR * Scalar::from(5u32)), &G2Affine::GENERATOR),
-            Bn254::pairing(&G1Affine::GENERATOR, &G2Affine::from(G2Projective::GENERATOR * Scalar::from(5u32))),
+            Bn254::pairing(
+                &G1Affine::from(G1Projective::GENERATOR * Scalar::from(5u32)),
+                &G2Affine::GENERATOR
+            ),
+            Bn254::pairing(
+                &G1Affine::GENERATOR,
+                &G2Affine::from(G2Projective::GENERATOR * Scalar::from(5u32))
+            ),
         );
     }
 
@@ -301,7 +307,10 @@ mod tests {
 
         let res = Bn254::multi_miller_loop(&[
             (&G1Affine::from(h), &G2Prepared::from(G2Affine::from(pk))),
-            (&G1Affine::from(sig), &G2Prepared::from(-G2Affine::GENERATOR)),
+            (
+                &G1Affine::from(sig),
+                &G2Prepared::from(-G2Affine::GENERATOR),
+            ),
         ]);
         assert_eq!(res.final_exponentiation().is_identity().unwrap_u8(), 1u8);
     }

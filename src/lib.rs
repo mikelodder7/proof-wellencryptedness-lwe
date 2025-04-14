@@ -6,6 +6,7 @@ use bellman::*;
 
 use digest::{Digest, ExtendableOutput, ExtendableOutputReset, Update};
 use elliptic_curve::group::Curve;
+use elliptic_curve::PrimeField;
 use elliptic_curve_tools::SumOfProducts;
 use frodo_kem_rs::hazmat::{
     Ciphertext, CiphertextRef, EncryptionKey, EncryptionKeyRef, Expanded, Kem, Params, Sample,
@@ -17,7 +18,6 @@ use pairing::{Engine, MultiMillerLoop};
 use rand_core::CryptoRngCore;
 use std::marker::PhantomData;
 use std::ops::{Index, Neg};
-use elliptic_curve::PrimeField;
 use zeroize::Zeroize;
 
 // /// A gadget for a 16-bit value add, multiply, and range operations
@@ -737,22 +737,23 @@ pub struct KyberCircuit<F: PrimeField> {
 
 impl<F: PrimeField> Default for KyberCircuit<F> {
     fn default() -> Self {
-        Self { pk: None, ct: None, _marker: PhantomData }
+        Self {
+            pk: None,
+            ct: None,
+            _marker: PhantomData,
+        }
     }
 }
 
 impl<F: PrimeField> Circuit<F> for KyberCircuit<F> {
-    fn synthesize<CS: ConstraintSystem<F>>(
-        self,
-        cs: &mut CS,
-    ) -> Result<(), SynthesisError> {
+    fn synthesize<CS: ConstraintSystem<F>>(self, cs: &mut CS) -> Result<(), SynthesisError> {
         let preimage_bits= match (self.pk, self.ct) {
             (Some(pk), Some(ct)) => {
                 bits_to_gadgets(
                     pk.as_bytes()
                         .iter()
                         .chain(ct.iter())
-                        .flat_map(|&v| (0..8).map(move |i| (v >> i) & 1 == 1))
+                        .flat_map(|&v| (0..8).rev().map(move |i| (v >> i) & 1 == 1))
                         .map(|b| Some(b)),
                     cs,
                 )?
@@ -779,16 +780,13 @@ impl<F: PrimeField> Circuit<F> for KyberCircuit<F> {
 
         // preimage_bits.append(&mut digest_bits);
 
-        gadgets::multipack::pack_into_inputs(
-            cs.namespace(|| "public key, ciphertext"),
-            &preimage_bits,
-        )?;
-
         // gadgets::multipack::pack_into_inputs(
-        //     cs.namespace(|| "computed digest"),
-        //     &hash,
+        //     cs.namespace(|| "public key, ciphertext"),
+        //     &preimage_bits,
         // )?;
         //
+        gadgets::multipack::pack_into_inputs(cs.namespace(|| "computed digest"), &hash)?;
+
         Ok(())
     }
 }
@@ -844,11 +842,9 @@ mod tests {
         let (dk, ek) = MlKem512::generate(&mut rng);
 
         let before = std::time::Instant::now();
-        let params = groth16::generate_random_parameters::<Bn254, _, _>(
-            KyberCircuit::default(),
-            &mut rng,
-        )
-            .unwrap();
+        let params =
+            groth16::generate_random_parameters::<Bn254, _, _>(KyberCircuit::default(), &mut rng)
+                .unwrap();
         println!("Time to generate parameters: {:?}", before.elapsed());
         let pvk = groth16::prepare_verifying_key(&params.vk);
 
@@ -859,8 +855,7 @@ mod tests {
         c.ct = Some(ct.clone());
 
         let before = std::time::Instant::now();
-        let proof: Proof<Bn254> =
-            groth16::create_random_proof(c, &params, &mut rng).unwrap();
+        let proof: Proof<Bn254> = groth16::create_random_proof(c, &params, &mut rng).unwrap();
         println!("Time to create proof: {:?}", before.elapsed());
 
         let mut hasher = sha2::Sha256::default();
@@ -918,15 +913,16 @@ mod tests {
         Update::update(&mut hasher, ct.0.as_ref());
         let digest = hasher.finalize();
 
-        let bytes = ek_bytes
-            .into_iter()
-            .chain(ct.into_iter())
-            .collect::<Vec<_>>();
-        let bits = gadgets::multipack::bytes_to_bits_le(bytes.as_slice());
-        println!("bits.len() = {}", bits.len());
-        let mut inputs = gadgets::multipack::compute_multipacking(&bits);
+        // let bytes = ek_bytes
+        //     .into_iter()
+        //     .chain(ct.into_iter())
+        //     .collect::<Vec<_>>();
+        // let bits = gadgets::multipack::bytes_to_bits_le(bytes.as_slice());
+        // println!("bits.len() = {}", bits.len());
+        // let mut inputs = gadgets::multipack::compute_multipacking(&bits);
 
-        // let bits = gadgets::multipack::bytes_to_bits_le(digest.as_slice());
+        let bits = gadgets::multipack::bytes_to_bits(digest.as_slice());
+        let inputs = gadgets::multipack::compute_multipacking(&bits);
         // inputs.append(&mut gadgets::multipack::compute_multipacking(&bits));
 
         println!("expected inputs.len() = {}", &params.vk.ic.len());
