@@ -1,5 +1,3 @@
-#[macro_use]
-mod macros;
 mod g1;
 mod g2;
 mod pairings;

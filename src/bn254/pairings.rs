@@ -291,6 +291,12 @@ mod tests {
     }
 
     #[test]
+    fn generators() {
+        let gt = Bn254::pairing(&G1Affine::GENERATOR, &G2Affine::GENERATOR);
+        println!("{:?}", gt);
+    }
+
+    #[test]
     fn signature() {
         let mut rng = rand::thread_rng();
         let sk = Scalar::random(&mut rng);

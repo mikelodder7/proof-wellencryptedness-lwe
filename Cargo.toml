@@ -17,7 +17,7 @@ elliptic-curve-tools = "0.1"
 frodo-kem-rs = { version = "0.4", features = ["hazmat"] }
 hex = "0.4"
 hex-literal = "0.4"
-ml-kem = "0.2"
+ml-kem = {  version = "0.2", features = ["deterministic"] }
 pairing = "0.23"
 rand_core = "0.6"
 serdect = "0.3"

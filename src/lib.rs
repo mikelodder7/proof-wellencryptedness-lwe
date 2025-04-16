@@ -1,7 +1,12 @@
+
+#[macro_use]
+mod macros;
+
 mod bn254;
+
 use bn254::*;
 
-use bellman::groth16::{ParameterSource, Proof, VerifyingKey};
+use bellman::groth16::{ParameterSource, Proof};
 use bellman::*;
 
 use digest::{Digest, ExtendableOutput, ExtendableOutputReset, Update};
@@ -9,132 +14,132 @@ use elliptic_curve::group::Curve;
 use elliptic_curve::PrimeField;
 use elliptic_curve_tools::SumOfProducts;
 use frodo_kem_rs::hazmat::{
-    Ciphertext, CiphertextRef, EncryptionKey, EncryptionKeyRef, Expanded, Kem, Params, Sample,
-    SharedSecret,
+    Expanded, Kem, Params, Sample
+    ,
 };
 use ml_kem::array::typenum::Unsigned;
-use ml_kem::{kem::EncapsulationKey, EncodedSizeUser, KemCore, MlKem512, MlKem512Params};
+use ml_kem::{kem::EncapsulationKey, EncodedSizeUser, KemCore, MlKem512, MlKem512Params, B32};
 use pairing::{Engine, MultiMillerLoop};
 use rand_core::CryptoRngCore;
 use std::marker::PhantomData;
 use std::ops::{Index, Neg};
 use zeroize::Zeroize;
 
-// /// A gadget for a 16-bit value add, multiply, and range operations
-// #[derive(Debug, Clone, Copy)]
-// pub struct Uint16 {
-//     value: u16,
-//     variable: Variable,
-//     modulus: Variable,
-// }
-//
-// impl Uint16 {
-//     pub fn new(value: u16, variable: Variable, modulus: Variable) -> Self {
-//         Self {
-//             value,
-//             variable,
-//             modulus,
-//         }
-//     }
-//
-//     pub fn value(&self) -> u16 {
-//         self.value
-//     }
-//
-//     pub fn variable(&self) -> Variable {
-//         self.variable
-//     }
-//
-//     pub fn modulus(&self) -> Variable {
-//         self.modulus
-//     }
-//
-//     pub fn add<CS: ConstraintSystem<Scalar>>(
-//         &self,
-//         mut cs: CS,
-//         other: &Self,
-//     ) -> Result<Self, SynthesisError> {
-//         let lhs = self.value;
-//         let rhs = other.value;
-//         let sum = lhs.wrapping_add(rhs);
-//         let raw_sum = (lhs as u32) + (rhs as u32);
-//         let quotient = raw_sum / 65536;
-//
-//         let sum_var = cs.alloc(|| "sum", || Ok(Scalar::from(sum)))?;
-//         let raw_sum_var = cs.alloc(|| "raw sum", || Ok(Scalar::from(raw_sum)))?;
-//         let quotient_var = cs.alloc(|| "quotient sum", || Ok(Scalar::from(quotient)))?;
-//
-//         cs.enforce(
-//             || "addition raw sum",
-//             |lc| lc + self.variable + other.variable,
-//             |lc| lc + CS::one(),
-//             |lc| lc + raw_sum_var,
-//         );
-//         cs.enforce(
-//             || "addition modulus",
-//             |lc| lc + quotient_var,
-//             |lc| lc + self.modulus,
-//             |lc| lc + raw_sum_var - sum_var,
-//         );
-//
-//         Ok(Self {
-//             value: sum,
-//             variable: sum_var,
-//             modulus: self.modulus,
-//         })
-//     }
-//
-//     pub fn mul<CS: ConstraintSystem<Scalar>>(
-//         &self,
-//         mut cs: CS,
-//         other: &Self,
-//     ) -> Result<Self, SynthesisError> {
-//         let lhs = self.value;
-//         let rhs = other.value;
-//         let prod = lhs.wrapping_mul(rhs);
-//         let raw_prod = (lhs as u32) * (rhs as u32);
-//         let quotient = raw_prod / 65536;
-//
-//         let prod_var = cs.alloc(|| "product input", || Ok(Scalar::from(prod)))?;
-//         let raw_prod_var = cs.alloc(|| "raw product input", || Ok(Scalar::from(raw_prod)))?;
-//         let quotient_var = cs.alloc(|| "quotient input", || Ok(Scalar::from(quotient)))?;
-//
-//         // raw_product = a * b
-//         cs.enforce(
-//             || "raw product",
-//             |lc| lc + self.variable,
-//             |lc| lc + other.variable,
-//             |lc| lc + raw_prod_var,
-//         );
-//         // raw_product = quotient * modulus + c
-//         cs.enforce(
-//             || "product modulus",
-//             |lc| lc + quotient_var,
-//             |lc| lc + self.modulus,
-//             |lc| lc + raw_prod_var - prod_var,
-//         );
-//         Ok(Self {
-//             value: prod,
-//             variable: prod_var,
-//             modulus: self.modulus,
-//         })
-//     }
-//
-//     pub fn equal<CS: ConstraintSystem<Scalar>>(
-//         &self,
-//         mut cs: CS,
-//         other: &Self,
-//     ) -> Result<(), SynthesisError> {
-//         cs.enforce(
-//             || "equal",
-//             |lc| lc + self.variable,
-//             |lc| lc + CS::one(),
-//             |lc| lc + other.variable,
-//         );
-//         Ok(())
-//     }
-// }
-//
+/// A gadget for a 16-bit value add, multiply, and range operations
+#[derive(Debug, Clone, Copy)]
+pub struct Uint16 {
+    value: u16,
+    variable: Variable,
+    modulus: Variable,
+}
+
+impl Uint16 {
+    pub fn new(value: u16, variable: Variable, modulus: Variable) -> Self {
+        Self {
+            value,
+            variable,
+            modulus,
+        }
+    }
+
+    pub fn value(&self) -> u16 {
+        self.value
+    }
+
+    pub fn variable(&self) -> Variable {
+        self.variable
+    }
+
+    pub fn modulus(&self) -> Variable {
+        self.modulus
+    }
+
+    pub fn add<CS: ConstraintSystem<Scalar>>(
+        &self,
+        mut cs: CS,
+        other: &Self,
+    ) -> Result<Self, SynthesisError> {
+        let lhs = self.value;
+        let rhs = other.value;
+        let sum = lhs.wrapping_add(rhs);
+        let raw_sum = (lhs as u32) + (rhs as u32);
+        let quotient = raw_sum / 65536;
+
+        let sum_var = cs.alloc(|| "sum", || Ok(Scalar::from(sum)))?;
+        let raw_sum_var = cs.alloc(|| "raw sum", || Ok(Scalar::from(raw_sum)))?;
+        let quotient_var = cs.alloc(|| "quotient sum", || Ok(Scalar::from(quotient)))?;
+
+        cs.enforce(
+            || "addition raw sum",
+            |lc| lc + self.variable + other.variable,
+            |lc| lc + CS::one(),
+            |lc| lc + raw_sum_var,
+        );
+        cs.enforce(
+            || "addition modulus",
+            |lc| lc + quotient_var,
+            |lc| lc + self.modulus,
+            |lc| lc + raw_sum_var - sum_var,
+        );
+
+        Ok(Self {
+            value: sum,
+            variable: sum_var,
+            modulus: self.modulus,
+        })
+    }
+
+    pub fn mul<CS: ConstraintSystem<Scalar>>(
+        &self,
+        mut cs: CS,
+        other: &Self,
+    ) -> Result<Self, SynthesisError> {
+        let lhs = self.value;
+        let rhs = other.value;
+        let prod = lhs.wrapping_mul(rhs);
+        let raw_prod = (lhs as u32) * (rhs as u32);
+        let quotient = raw_prod / 65536;
+
+        let prod_var = cs.alloc(|| "product input", || Ok(Scalar::from(prod)))?;
+        let raw_prod_var = cs.alloc(|| "raw product input", || Ok(Scalar::from(raw_prod)))?;
+        let quotient_var = cs.alloc(|| "quotient input", || Ok(Scalar::from(quotient)))?;
+
+        // raw_product = a * b
+        cs.enforce(
+            || "raw product",
+            |lc| lc + self.variable,
+            |lc| lc + other.variable,
+            |lc| lc + raw_prod_var,
+        );
+        // raw_product = quotient * modulus + c
+        cs.enforce(
+            || "product modulus",
+            |lc| lc + quotient_var,
+            |lc| lc + self.modulus,
+            |lc| lc + raw_prod_var - prod_var,
+        );
+        Ok(Self {
+            value: prod,
+            variable: prod_var,
+            modulus: self.modulus,
+        })
+    }
+
+    pub fn equal<CS: ConstraintSystem<Scalar>>(
+        &self,
+        mut cs: CS,
+        other: &Self,
+    ) -> Result<(), SynthesisError> {
+        cs.enforce(
+            || "equal",
+            |lc| lc + self.variable,
+            |lc| lc + CS::one(),
+            |lc| lc + other.variable,
+        );
+        Ok(())
+    }
+}
+
 // /// Provides a view for a matrix if stored or just returns a default value
 // #[derive(Debug, Clone, Copy)]
 // struct MatrixView<'a> {
@@ -791,6 +796,47 @@ impl<F: PrimeField> Circuit<F> for KyberCircuit<F> {
     }
 }
 
+pub struct KyberEncapsulateCircuit<F: PrimeField> {
+    mu: Option<B32>,
+    pk: Option<EncapsulationKey<MlKem512Params>>,
+    ct: Option<ml_kem::Ciphertext<MlKem512>>,
+    _marker: PhantomData<F>,
+}
+
+impl<F: PrimeField> Circuit<F> for KyberEncapsulateCircuit<F> {
+    fn synthesize<CS: ConstraintSystem<F>>(self, cs: &mut CS) -> Result<(), SynthesisError> {
+        // Prove
+        // K, r = G(self.mu, self.pk.h)
+        // Prove
+        // self.ct == Encrypt_PKE(self.mu, r)
+        todo!()
+    }
+}
+
+pub struct Sha3512Circuit<F: PrimeField> {
+    preimage_bits: Option<Vec<gadgets::boolean::Boolean>>,
+    digest_bits: Option<Vec<gadgets::boolean::Boolean>>,
+    _marker: PhantomData<F>,
+}
+
+impl<F: PrimeField> Circuit<F> for Sha3512Circuit<F> {
+    fn synthesize<CS: ConstraintSystem<F>>(self, cs: &mut CS) -> Result<(), SynthesisError> {
+        Ok(())
+    }
+}
+
+pub struct Shake256Circuit<F: PrimeField> {
+    preimage_bits: Option<Vec<gadgets::boolean::Boolean>>,
+    digest_bits: Option<Vec<gadgets::boolean::Boolean>>,
+    _marker: PhantomData<F>,
+}
+
+impl<F: PrimeField> Circuit<F> for Shake256Circuit<F> {
+    fn synthesize<CS: ConstraintSystem<F>>(self, cs: &mut CS) -> Result<(), SynthesisError> {
+        Ok(())
+    }
+}
+
 // #[derive(Debug, Clone)]
 // pub struct KyberCircuitPublicKey<E: MultiMillerLoop> {
 //     acc: E::G1,
@@ -832,9 +878,131 @@ impl<F: PrimeField> Circuit<F> for KyberCircuit<F> {
 mod tests {
     use super::*;
     use bellman::groth16;
+    use ml_kem::EncapsulateDeterministic;
     use ml_kem::kem::Encapsulate;
     use rand_chacha::ChaCha8Rng;
-    use rand_core::SeedableRng;
+    use rand_core::{RngCore, SeedableRng};
+    use rand::Rng;
+
+    #[test]
+    fn test_add_gadget() {
+        #[derive(Default, Copy, Clone)]
+        struct Add16BitCircuit {
+            a: Option<u16>,
+            b: Option<u16>,
+        }
+
+        impl Circuit<Scalar> for Add16BitCircuit {
+            fn synthesize<CS: ConstraintSystem<Scalar>>(
+                self,
+                cs: &mut CS,
+            ) -> Result<(), SynthesisError> {
+                // See what happens when overflow
+
+                let a = self.a.unwrap_or_default();
+                let b = self.b.unwrap_or_default();
+                let sum = a.wrapping_add(b);
+                let raw_sum = (a as u32) + (b as u32);
+                let quotient = raw_sum / 65536;
+
+                let a_var = cs.alloc(|| "a", || Ok(Scalar::from(a)))?;
+                let b_var = cs.alloc(|| "b", || Ok(Scalar::from(b)))?;
+                let modulus = cs.alloc(|| "modulus", || Ok(Scalar::from(65536u32)))?;
+                let sum = cs.alloc_input(|| "c", || Ok(Scalar::from(sum)))?;
+                let raw_sum = cs.alloc(|| "raw_sum", || Ok(Scalar::from(raw_sum)))?;
+                let quotient_var = cs.alloc(|| "quotient", || Ok(Scalar::from(quotient)))?;
+
+                cs.enforce(
+                    || "addition wrap",
+                    |lc| lc + a_var + b_var,
+                    |lc| lc + CS::one(),
+                    |lc| lc + raw_sum,
+                );
+                cs.enforce(
+                    || "addition modulus",
+                    |lc| lc + quotient_var,
+                    |lc| lc + modulus,
+                    |lc| lc + raw_sum - sum,
+                );
+                Ok(())
+            }
+        }
+
+        let mut rng = ChaCha8Rng::seed_from_u64(0u64);
+        let mut circuit = Add16BitCircuit::default();
+        let params = groth16::generate_random_parameters::<Bn254, _, _>(circuit, &mut rng).unwrap();
+        let pvk = groth16::prepare_verifying_key(&params.vk);
+
+        for _ in 0..10 {
+            let a = rng.gen();
+            let b = rng.gen();
+            circuit.a = Some(a);
+            circuit.b = Some(b);
+
+            let proof = groth16::create_random_proof(circuit, &params, &mut rng).unwrap();
+            let c = a.wrapping_add(b);
+            let sc_c = Scalar::from(c);
+            let res = groth16::verify_proof(&pvk, &proof, &[sc_c]);
+            println!("{:?}", res);
+        }
+    }
+
+    #[test]
+    fn test_mul_gadget() {
+        struct Mul16BitCircuit;
+
+        impl Circuit<Scalar> for Mul16BitCircuit {
+            fn synthesize<CS: ConstraintSystem<Scalar>>(
+                self,
+                cs: &mut CS,
+            ) -> Result<(), SynthesisError> {
+                // See what happens when overflow
+
+                let a = 0x7FFFu16;
+                let b = 0xFFF0u16;
+                let c = a.wrapping_mul(b);
+                let raw_mul = (a as u32) * (b as u32);
+
+                let quotient = raw_mul / 65536;
+
+                let a_var = cs.alloc(|| "a", || Ok(Scalar::from(a)))?;
+                let b_var = cs.alloc(|| "b", || Ok(Scalar::from(b)))?;
+                let c_var = cs.alloc_input(|| "c", || Ok(Scalar::from(c)))?;
+
+                let modulus = cs.alloc(|| "modulus", || Ok(Scalar::from(65536u32)))?;
+                let prod_var = cs.alloc(|| "product", || Ok(Scalar::from(raw_mul)))?;
+                let quotient_var = cs.alloc(|| "quotient", || Ok(Scalar::from(quotient)))?;
+
+                // raw_product = a * b
+                cs.enforce(
+                    || "raw product",
+                    |lc| lc + a_var,
+                    |lc| lc + b_var,
+                    |lc| lc + prod_var,
+                );
+                // raw_product = quotient * modulus + c
+                cs.enforce(
+                    || "product modulus",
+                    |lc| lc + quotient_var,
+                    |lc| lc + modulus,
+                    |lc| lc + prod_var - c_var,
+                );
+                Ok(())
+            }
+        }
+
+        let mut rng = ChaCha8Rng::seed_from_u64(0u64);
+        let params =
+            groth16::generate_random_parameters::<Bn254, _, _>(Mul16BitCircuit, &mut rng).unwrap();
+        let pvk = groth16::prepare_verifying_key(&params.vk);
+        let proof = groth16::create_random_proof(Mul16BitCircuit, &params, &mut rng).unwrap();
+        let a = 0x7FFFu16;
+        let b = 0xFFF0u16;
+        let c = a.wrapping_mul(b);
+        let sc_c = Scalar::from(c);
+        let res = groth16::verify_proof(&pvk, &proof, &[sc_c]);
+        println!("{:?}", res);
+    }
 
     #[test]
     fn test_encapsulate_gadget_bn254() {
@@ -930,5 +1098,16 @@ mod tests {
 
         let res = groth16::verify_proof(&pvk, &proof, &inputs);
         println!("{:?}", res);
+    }
+
+    #[test]
+    fn basic_kem() {
+        let mut rng = ChaCha8Rng::seed_from_u64(0u64);
+        let (dk, ek) = MlKem512::generate(&mut rng);
+        let mut mu = B32::default();
+        rng.fill_bytes(&mut mu);
+        let (ct, _ss) = ek.encapsulate_deterministic(&mu).unwrap();
+
+        println!("ct = {:?}", ct)
     }
 }
